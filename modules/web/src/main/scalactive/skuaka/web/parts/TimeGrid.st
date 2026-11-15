@@ -5,8 +5,8 @@ import org.scalajs.dom
 
 import scala.scalajs.js
 
-// 日・週の表示: 時間の表. 空いたところをドラッグして予定を作り、予定をドラッグで移動、下の端で伸縮する.
-// 終日・24時間以上の予定は上の「終日」の欄に帯で出す.
+// 日・週の表示: 時間の表. 空いたところをドラッグして予定を作り（日をまたいでもよい）、予定をドラッグで移動、下の端で伸縮する.
+// 終日・24時間以上の予定は上の「終日」の欄に帯で出す. 終日の欄の空いたところをドラッグすると、その日数の終日の予定を作る.
 
 val HourPx = 48
 val Snap = 15
@@ -20,8 +20,14 @@ final case class Col(day: String, segs: List[Seg])
 /** ドラッグ中（kind: new 作成 / move 移動 / resize 伸縮）. day0・min0 は押した位置、day・min は今の位置. */
 final case class Drag(kind: String, o: Option[OccurrenceDto], day0: String, min0: Int, day: String, min: Int, moved: Boolean)
 
-case class State(drag: RV[Option[Drag]] = RV(None), now: RV[Double] = RV(js.Date.now()),
-                 body: ElementRef[dom.HTMLElement] = ElementRef(), cols: ElementRef[dom.HTMLElement] = ElementRef())
+/** 終日の欄で選んでいる日（押した日と今の日）. */
+final case class DaySel(day0: String, day: String) {
+  def range: (String, String) = if (day < day0) (day, day0) else (day0, day)
+}
+
+case class State(drag: RV[Option[Drag]] = RV(None), now: RV[Double] = RV(js.Date.now()), daySel: RV[Option[DaySel]] = RV(None),
+                 body: ElementRef[dom.HTMLElement] = ElementRef(), cols: ElementRef[dom.HTMLElement] = ElementRef(),
+                 allday: ElementRef[dom.HTMLElement] = ElementRef())
 
 def initState() = State()
 
@@ -158,16 +164,43 @@ def nowStyle(s: State, d: String) = s.now.mapC { _ =>
   if (d != Cal.today()) "display: none" else s"top: ${Cal.minutesOf(new js.Date().toISOString()) / 60.0 * HourPx}px"
 }
 
-/** 作成のドラッグ中の範囲. */
+/** 作成のドラッグの範囲（始まりの日と分、終わりの日と分. 終わりは選んだ15分の枠の終わり. 日をまたいでもよい）. */
+def selRange(x: Drag): ((String, Int), (String, Int)) = {
+  val back = x.day < x.day0 || (x.day == x.day0 && x.min < x.min0) // 押した位置より前へ戻した
+  val (a, b) = if (back) ((x.day, x.min), (x.day0, x.min0)) else ((x.day0, x.min0), (x.day, x.min))
+  (a, (b._1, b._2 + Snap))
+}
+
+/** 作成のドラッグ中の範囲（またいだ日の列それぞれに）. */
 def selStyle(s: State, d: String) = s.drag.mapC {
-  case Some(x) if x.kind == "new" && x.day0 == d =>
-    val (a, b) = (math.min(x.min0, x.min), math.max(x.min0, x.min) + Snap)
-    s"display: block; top: ${a / 60.0 * HourPx}px; height: ${(b - a) / 60.0 * HourPx}px"
+  case Some(x) if x.kind == "new" =>
+    val ((sd, sm), (ed, em)) = selRange(x)
+    if (d < sd || d > ed) "display: none"
+    else {
+      val (a, b) = (if (d == sd) sm else 0, if (d == ed) em else 24 * 60)
+      s"display: block; top: ${a / 60.0 * HourPx}px; height: ${(b - a) / 60.0 * HourPx}px"
+    }
   case _ => "display: none"
 }
-def selText(s: State) = s.drag.mapC {
-  case Some(x) if x.kind == "new" => { val (a, b) = (math.min(x.min0, x.min), math.max(x.min0, x.min) + Snap); s"${Cal.hm(a)} – ${Cal.hm(b)}" }
+/** 範囲の時刻（始まりの日の列にだけ出す）. */
+def selText(s: State, d: String) = s.drag.mapC {
+  case Some(x) if x.kind == "new" =>
+    val ((sd, sm), (ed, em)) = selRange(x)
+    if (d != sd) ""
+    else if (sd == ed) s"${Cal.hm(sm)} – ${Cal.hm(em)}"
+    else s"${Cal.label(sd)} ${Cal.hm(sm)} – ${Cal.label(ed)} ${Cal.hm(em % 1440)}"
   case _ => ""
+}
+
+/** 終日の欄で選んでいる範囲. */
+def daySelStyle(s: State) = s.daySel.mapC {
+  case Some(x) =>
+    val ds = dayList
+    val (a, b) = x.range
+    val (i, j) = (ds.indexOf(a), ds.indexOf(b))
+    val n = ds.size
+    s"display: block; left: calc(${i * 100.0 / n}% + 2px); width: calc(${(j - i + 1) * 100.0 / n}% - 5px)"
+  case None => "display: none"
 }
 
 def segText(g: Seg): String = Store.timeText(g.o)
@@ -189,20 +222,24 @@ def at(s: State, e: dom.MouseEvent): Option[(String, Int)] = s.cols.get.map { el
 private var moveL: js.Function1[dom.PointerEvent, Unit] = null
 private var upL: js.Function1[dom.PointerEvent, Unit] = null
 
-private def listen(s: State): Unit = {
-  moveL = (e: dom.PointerEvent) => s.drag.v.foreach { d =>
-    at(s, e).foreach { (day, min) =>
-      if (day != d.day || min != d.min) s.drag := Some(d.copy(day = day, min = min, moved = true))
-    }
-  }
+/** 押したあと、離すまでポインタを追う. */
+private def track(onMove: dom.PointerEvent => Unit)(onUp: () => Unit): Unit = {
+  moveL = (e: dom.PointerEvent) => onMove(e)
   upL = (_: dom.PointerEvent) => {
     dom.window.removeEventListener("pointermove", moveL)
     dom.window.removeEventListener("pointerup", upL)
-    finish(s)
+    onUp()
   }
   dom.window.addEventListener("pointermove", moveL)
   dom.window.addEventListener("pointerup", upL)
 }
+
+private def listen(s: State): Unit =
+  track(e => s.drag.v.foreach { d =>
+    at(s, e).foreach { (day, min) =>
+      if (day != d.day || min != d.min) s.drag := Some(d.copy(day = day, min = min, moved = true))
+    }
+  })(() => finish(s))
 
 /** 空いたところを押す: 作成の範囲を選び始める. */
 def downCol(s: State, e: dom.Event): Unit = {
@@ -231,8 +268,9 @@ private def finish(s: State): Unit = s.drag.v.foreach { d =>
   (d.kind, d.o) match {
     case ("new", _) =>
       s.drag := None
-      val (a, b) = (math.min(d.min0, d.min), math.max(d.min0, d.min) + Snap)
-      Store.create(d.day0, a, if (d.moved) b else a + 60)
+      val ((sd, sm), (ed, em)) = selRange(d)
+      if (!d.moved) Store.create(d.day0, d.min0, d.min0 + 60)
+      else Store.create(sd, sm, em, endDate = Option.when(ed != sd)(ed))
     case (_, Some(o)) if !d.moved || d.kind == "view" || (d.day == d.day0 && d.min == d.min0) =>
       s.drag := None
       Store.detail := Some(o)
@@ -247,10 +285,24 @@ private def finish(s: State): Unit = s.drag.v.foreach { d =>
 
 def openBar(b: Bar): Unit = Store.detail := Some(b.o)
 
-/** 終日の欄の空いたところ: その日の終日の予定を作る. */
-def clickAllday(s: State, e: dom.Event): Unit = {
-  val r = e.currentTarget.asInstanceOf[dom.HTMLElement].getBoundingClientRect()
-  Store.create(dayAt(r, e.asInstanceOf[dom.MouseEvent].clientX), allDay = true)
+/** 終日の欄の空いたところを押す: 離した日までの終日の予定を作る（動かさなければその日だけ）. */
+def downAllday(s: State, e: dom.Event): Unit = {
+  val pe = e.asInstanceOf[dom.PointerEvent]
+  if (pe.button == 0 && Store.defaultCalendar.isDefined) s.allday.get.foreach { el =>
+    pe.preventDefault()
+    val d0 = dayAt(el.getBoundingClientRect(), pe.clientX)
+    s.daySel := Some(DaySel(d0, d0))
+    track(m => s.daySel.v.foreach { x =>
+      val d = dayAt(el.getBoundingClientRect(), m.clientX)
+      if (d != x.day) s.daySel := Some(x.copy(day = d))
+    }) { () =>
+      s.daySel.v.foreach { x =>
+        val (a, b) = x.range
+        Store.create(a, allDay = true, endDate = Some(b))
+      }
+      s.daySel := None
+    }
+  }
 }
 
 def gmt: String = {
@@ -272,7 +324,8 @@ def gmt: String = {
     </div>
     <div class="allday-row">
       <div class="gutter small muted">終日</div>
-      <div class="allday" :style="alldayStyle(s)" @click.self="clickAllday(s, event)">
+      <div class="allday" ref="s.allday" :style="alldayStyle(s)" @pointerdown.self="downAllday(s, event)">
+        <div class="asel" :style="daySelStyle(s)"></div>
         <div v-for="b in bars(s)" :class='Store.chipClass(b.o, "ev bar")' :style="barStyle(b)" @click="openBar(b)" :title="b.o.title">
           <span v-if="b.cutL">◂ </span>{{ b.o.title }}<span v-if="b.cutR"> ▸</span>
         </div>
@@ -290,7 +343,7 @@ def gmt: String = {
               <div class="tm">{{ segText(g) }}<template v-if="g.o.location.nonEmpty">、{{ g.o.location }}</template></div>
               <span v-if="g.o.canEdit" class="grip" @pointerdown='downSeg(s, g, "resize", event)'></span>
             </div>
-            <div class="sel" :style="selStyle(s, c.day)">{{ selText(s) }}</div>
+            <div class="sel" :style="selStyle(s, c.day)">{{ selText(s, c.day) }}</div>
             <div class="now" :style="nowStyle(s, c.day)"></div>
           </div>
         </div>
@@ -316,6 +369,7 @@ def gmt: String = {
 .dh.today .dn { background: var(--accent); color: #fff; }
 .allday { position: relative; border-left: 1px solid var(--line); min-height: 28px; cursor: pointer; }
 .bar { position: absolute; height: 21px; padding: 2px .5rem; white-space: nowrap; text-overflow: ellipsis; }
+.asel { position: absolute; top: 2px; bottom: 3px; background: var(--accent); opacity: .35; border-radius: 5px; pointer-events: none; display: none; }
 .body { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
 .grid { display: grid; grid-template-columns: 56px 1fr; }
 .hours { position: relative; }

@@ -235,16 +235,20 @@ object Store {
 
   def defaultCalendar: Option[CalendarDto] = writable.find(c => c.visible).orElse(writable.headOption)
 
-  /** 新しい予定の編集を始める（時刻は分. 終日なら無視する. 公開リンクで見ているときは何もしない）. */
+  /**
+   * 新しい予定の編集を始める（公開リンクで見ているときは何もしない）.
+   * startMin は d の、endMin は endDate（省けば d）の0時からの分（終日なら無視する. 1440 なら翌日の0時）.
+   */
   def create(d: String, startMin: Int = -1, endMin: Int = -1, allDay: Boolean = false, endDate: Option[String] = None): Unit =
     if (guest.v.isEmpty) defaultCalendar match {
       case None => toast("予定を入れられるカレンダーがありません", error = true)
       case Some(c) =>
         val now   = new js.Date()
         val s     = if (startMin >= 0) startMin else math.min(23 * 60, (now.getHours().toInt + 1) * 60)
-        val e     = if (endMin > s) endMin else s + 60
+        val other = endDate.exists(_ > d) // 日をまたぐ
+        val e     = if (endMin >= 0 && (other || endMin > s)) endMin else s + 60
         val sDate = d
-        val eDate = endDate.getOrElse(if (allDay) d else Cal.addDays(d, e / 1440))
+        val eDate = if (allDay) endDate.getOrElse(d) else Cal.addDays(endDate.getOrElse(d), e / 1440)
         editor := Some(Draft(None, None, wasRecurring = false, c.id, "", "", "", allDay, sDate, Cal.hm(s), eDate, Cal.hm(e % 1440),
           Cal.timezone(), None, None, Nil, if (allDay) Nil else List(10), None))
     }

@@ -3,8 +3,10 @@ import skuaka.web.*
 import skuaka.shared.*
 import org.scalajs.dom
 
+import scala.scalajs.js
 
-// 月の表示: 6週間の表. 予定はドラッグで別の日へ動かせる. 空いたところをクリックすると、その日の終日の予定を作る.
+// 月の表示: 6週間の表. 予定はドラッグで別の日へ動かせる. 空いたところをドラッグすると、またいだ日数の終日の予定を作る
+// （動かさずにクリックすれば、その日だけ）.
 
 val MaxChips = 3
 
@@ -13,7 +15,13 @@ final case class Cell(day: String, items: List[OccurrenceDto], more: Int)
 /** ドラッグ中の予定と、つかんだ日. */
 private var dragging: Option[(OccurrenceDto, String)] = None
 
-case class State(over: RV[String] = RV(""))
+/** 空いたところのドラッグで選んでいる日（押した日と今の日）. */
+final case class DaySel(day0: String, day: String) {
+  def range: (String, String) = if (day < day0) (day, day0) else (day0, day)
+  def has(d: String): Boolean = { val (a, b) = range; d >= a && d <= b }
+}
+
+case class State(over: RV[String] = RV(""), sel: RV[Option[DaySel]] = RV(None))
 
 def initState() = State()
 
@@ -38,8 +46,9 @@ def chipStyle(o: OccurrenceDto): String =
 
 def chipClass(o: OccurrenceDto): String = Store.chipClass(o, if (isBlock(o)) "ev mchip block" else "ev mchip line")
 
-def cellClass(s: State, d: String) = s.over.mapC { ov =>
-  List(Some("cell"), Option.when(Cal.month(d) != Cal.month(Store.date.v))("out"), Option.when(ov == d)("over")).flatten.mkString(" ")
+def cellClass(s: State, d: String) = computed {
+  List(Some("cell"), Option.when(Cal.month(d) != Cal.month(Store.date.v))("out"), Option.when(s.over.v == d)("over"),
+    Option.when(s.sel.v.exists(_.has(d)))("sel")).flatten.mkString(" ")
 }
 
 def numClass(d: String): String =
@@ -83,6 +92,25 @@ def drop(s: State, d: String, e: dom.Event): Unit = {
 
 def end(s: State): Unit = { dragging = None; s.over := "" }
 
+private var upL: js.Function1[dom.PointerEvent, Unit] = null
+
+/** 空いたところを押す: 離した日までの終日の予定を作る（ほかの日へはポインタが入ったときに広げる）. */
+def downCell(s: State, d: String, e: dom.Event): Unit = {
+  val pe = e.asInstanceOf[dom.PointerEvent]
+  if (pe.button == 0 && Store.defaultCalendar.isDefined) {
+    pe.preventDefault()
+    s.sel := Some(DaySel(d, d))
+    upL = (_: dom.PointerEvent) => {
+      dom.window.removeEventListener("pointerup", upL)
+      s.sel.v.foreach { x => val (a, b) = x.range; Store.create(a, allDay = true, endDate = Some(b)) }
+      s.sel := None
+    }
+    dom.window.addEventListener("pointerup", upL)
+  }
+}
+
+def enterCell(s: State, d: String): Unit = s.sel.v.foreach(x => if (x.day != d) s.sel := Some(x.copy(day = d)))
+
 def open(o: OccurrenceDto, e: dom.Event): Unit = { e.stopPropagation(); Store.detail := Some(o) }
 
 def chipText(o: OccurrenceDto): String = if (isBlock(o)) o.title else s"${Cal.time(o.start)} ${o.title}"
@@ -93,9 +121,9 @@ def chipText(o: OccurrenceDto): String = if (isBlock(o)) o.title else s"${Cal.ti
     <div class="wh"><span v-for="w in heads" :class='if (w == 0) "hol" else ""'>{{ Cal.WeekNames(w) }}</span></div>
     <div class="weeks">
       <div v-for="wk in weeks" class="week">
-        <div v-for="c in wk" :key="c.day" :class="cellClass(s, c.day)" @click.self="Store.create(c.day, allDay = true)"
-          @dragover="over(s, c.day, event)" @drop="drop(s, c.day, event)">
-          <div class="top" @click.self="Store.create(c.day, allDay = true)">
+        <div v-for="c in wk" :key="c.day" :class="cellClass(s, c.day)" @pointerdown.self="downCell(s, c.day, event)"
+          @pointerenter="enterCell(s, c.day)" @dragover="over(s, c.day, event)" @drop="drop(s, c.day, event)">
+          <div class="top" @pointerdown.self="downCell(s, c.day, event)">
             <button :class="numClass(c.day)" @click="Store.openDay(c.day)">{{ label(c.day) }}</button>
             <span class="hname">{{ Holidays.name(c.day).getOrElse("") }}</span>
           </div>
@@ -119,7 +147,7 @@ def chipText(o: OccurrenceDto): String = if (isBlock(o)) o.title else s"${Cal.ti
 .cell:first-child { border-left: none; }
 .cell.out { background: color-mix(in srgb, var(--hover) 50%, transparent); }
 .cell.out .num { color: var(--muted); }
-.cell.over { background: var(--accent-weak); }
+.cell.over, .cell.sel { background: var(--accent-weak); }
 .top { display: flex; align-items: center; gap: .3rem; min-width: 0; }
 .num { border: none; background: transparent; font-size: .76rem; padding: 0 .4rem; height: 24px; min-width: 24px; border-radius: 999px; justify-content: center; }
 .num:hover { background: var(--hover); }
