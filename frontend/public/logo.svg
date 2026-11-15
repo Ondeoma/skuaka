@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="skuaka">
+  <!-- 月のカレンダーを抱えたトウゾクカモメ（skua） -->
+  <rect width="160" height="160" rx="36" fill="#FFF4D6"/>
+  <path d="M80 31q-12-13-4-27q14 7 4 27z" fill="#1A73E8"/>
+  <path d="M80 31q13-10 21-4q-8 12-21 4z" fill="#6AA7F0"/>
+  <circle cx="80" cy="80" r="50" fill="#7A6450"/>
+  <path d="M33 70q4-38 47-40q43 2 47 40q-20-14-47-14q-27 0-47 14z" fill="#5A4636"/>
+  <circle cx="66" cy="62" r="5" fill="#21170F"/><circle cx="67.5" cy="60.5" r="1.6" fill="#fff"/>
+  <circle cx="94" cy="62" r="5" fill="#21170F"/><circle cx="95.5" cy="60.5" r="1.6" fill="#fff"/>
+  <ellipse cx="55" cy="75" rx="7" ry="4" fill="#F4A3A3"/><ellipse cx="105" cy="75" rx="7" ry="4" fill="#F4A3A3"/>
+  <rect x="34" y="84" width="92" height="64" rx="7" fill="#fff" stroke="#D9CBB0" stroke-width="1.5"/>
+  <path d="M34 91a7 7 0 0 1 7-7h78a7 7 0 0 1 7 7v9H34z" fill="#DE3423"/>
+  <g fill="#2B2F36"><rect x="52" y="79" width="6" height="12" rx="3"/><rect x="102" y="79" width="6" height="12" rx="3"/></g>
+  <g fill="#E7DCC8">
+    <rect x="42" y="107" width="12" height="9" rx="2"/><rect x="58" y="107" width="12" height="9" rx="2"/><rect x="74" y="107" width="12" height="9" rx="2"/>
+    <rect x="90" y="107" width="12" height="9" rx="2"/><rect x="106" y="107" width="12" height="9" rx="2"/>
+    <rect x="42" y="121" width="12" height="9" rx="2"/><rect x="74" y="121" width="12" height="9" rx="2"/>
+    <rect x="90" y="121" width="12" height="9" rx="2"/><rect x="106" y="121" width="12" height="9" rx="2"/>
+    <rect x="42" y="135" width="12" height="7" rx="2"/><rect x="58" y="135" width="12" height="7" rx="2"/><rect x="74" y="135" width="12" height="7" rx="2"/>
+  </g>
+  <rect x="58" y="121" width="12" height="9" rx="2" fill="#1A73E8"/>
+  <rect x="90" y="135" width="28" height="7" rx="2" fill="#33B679"/>
+  <rect x="90" y="107" width="12" height="9" rx="2" fill="#F6BF26"/>
+  <path d="M72 64q8-7 16 0q6 12-4 24q-1-10-12-15z" fill="#3A3F45"/>
+  <ellipse cx="45" cy="88" rx="9" ry="6" fill="#7A6450"/><ellipse cx="115" cy="88" rx="9" ry="6" fill="#7A6450"/>
+</svg>
