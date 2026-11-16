@@ -484,6 +484,8 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
           case "prompts/list"   => IO.pure(Some(ok(id, Json.obj("prompts" -> Json.arr()))))
           case other            => IO.pure(Some(rpcFail(id, -32601, s"method not found: $other")))
 
+  private val MaxBatch = 20
+
   private val unauthorized =
     Response[IO](Status.Unauthorized).putHeaders(`WWW-Authenticate`(Challenge("Bearer", "skuaka")))
       .withEntity(ErrorDto("API トークン（Authorization: Bearer）が必要です"))
@@ -500,6 +502,8 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
                 case Left(_) => BadRequest(rpcFail(Json.Null, -32700, "parse error"))
                 case Right(j) =>
                   j.asArray match
+                    case Some(batch) if batch.size > MaxBatch =>
+                      BadRequest(rpcFail(Json.Null, -32600, s"一度に送れる要求は ${MaxBatch} 件までです"))
                     case Some(batch) =>
                       batch.toList.traverse(handle(call, p, _)).map(_.flatten).flatMap(rs => if rs.isEmpty then Accepted() else Ok(rs.asJson))
                     case None => handle(call, p, j).flatMap(_.fold(Accepted())(Ok(_)))

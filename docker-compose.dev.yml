@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: skuaka
       POSTGRES_PASSWORD: skuaka
       POSTGRES_DB: skuaka
-    ports: ["54349:5432"]
+    ports: ["127.0.0.1:54349:5432"]   # 手元からだけ（LAN に開かない）
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/docker/dev-initdb.sql:/docker-entrypoint-initdb.d/10-skuaka-test.sql:ro   # テスト用DB skuaka_test

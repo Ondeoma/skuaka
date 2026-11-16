@@ -7,7 +7,7 @@ import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.headers.Location
-import skuaka.auth.{ApiTokens, Crypto, OidcClient}
+import skuaka.auth.{ApiTokens, Crypto, LoginDenied, OidcClient}
 import skuaka.db.*
 import skuaka.shared.*
 
@@ -17,10 +17,6 @@ import java.time.Instant
 final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: CalendarStore, val sessions: SessionAuth, cfg: ApiConfig,
     skakaUrl: Option[String] = None)
     extends RouteSupport:
-
-  /** ログイン後に戻る先（同じサイトのパスだけ）. */
-  private def safeReturn(s: Option[String]): String =
-    s.filter(p => p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")).getOrElse("/")
 
   private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] =
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)), "Cache-Control" -> "no-store")
@@ -34,7 +30,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
     calendars.ensurePrimary(u) *> sessions.issue(u, idToken)
 
   private def page(title: String, msg: String, status: Status): IO[Response[IO]] =
-    val esc = (s: String) => s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    val esc = (s: String) => s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
     IO.pure(TextResponse(status,
       s"""<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(title)}</title>
          |<body style="font-family:system-ui,sans-serif;max-width:480px;margin:12vh auto;padding:0 1rem">
@@ -43,7 +39,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "auth" / "login" =>
-      val back = safeReturn(param(req, "returnTo"))
+      val back = SafePath.of(param(req, "returnTo"))
       oidc match
         case Some(o) =>
           val state = Crypto.randomToken(); val verifier = Crypto.randomToken(48); val nonce = Crypto.randomToken()
@@ -61,12 +57,14 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
             case None => page("ログインできませんでした", "ログインの有効期限が切れました。もう一度ログインしてください。", Status.BadRequest)
             case Some((verifier, nonce, back)) =>
               o.authenticate(code, verifier, nonce, Instant.now()).attempt.flatMap {
+                // 理由の詳細（検証に失敗した項目など）はログにだけ出す
+                case Left(e: LoginDenied) => page("ログインできませんでした", e.getMessage, Status.Forbidden)
                 case Left(e) =>
                   IO.println(s"[skuaka] login failed: ${e.getMessage}") *>
-                    page("ログインできませんでした", e.getMessage, Status.Unauthorized)
+                    page("ログインできませんでした", "IdP からの応答を確かめられませんでした。時間をおいてもう一度試してください。", Status.Unauthorized)
                 case Right(res) =>
                   val id = res.identity
-                  users.upsert(id.sub, id.name, id.email, id.picture).flatMap { u =>
+                  users.upsert(id.sub, id.name, id.email, id.picture.filter(p => p.startsWith("https://") || p.startsWith("http://"))).flatMap { u =>
                     if u.disabled then page("ログインできませんでした", "このユーザーは無効にされています。", Status.Forbidden)
                     else loggedIn(u, Some(res.idToken)).flatMap(c => redirect(back, Some(c)))
                   }
@@ -93,7 +91,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
           for
             u  <- users.upsert(s"dev:$name", name, c.get[String]("email").toOption.map(_.trim).filter(_.contains("@")), None)
             ck <- loggedIn(u, None)
-            r  <- Ok(Json.obj("redirect" -> safeReturn(c.get[String]("returnTo").toOption).asJson)).map(_.addCookie(ck))
+            r  <- Ok(Json.obj("redirect" -> SafePath.of(c.get[String]("returnTo").toOption).asJson)).map(_.addCookie(ck))
           yield r
       }
 

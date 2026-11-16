@@ -64,7 +64,9 @@ final class SkakaService(val cfg: SkakaConfig, http: Client[IO], val store: Inte
           if r.status == Status.Unauthorized then store.deleteToken(uid, Provider).as(Left("skaka との連携が切れました。設定の画面で連携し直してください"))
           else if !r.status.isSuccess then IO.pure(Left(s"skaka が ${r.status.code} を返しました"))
           else ok(r).map(Right(_))
-        }.timeout(15.seconds).handleError(e => Left(s"skaka に接続できませんでした（${e.getMessage}）"))
+        }.timeout(15.seconds).handleErrorWith(e =>
+          // 中継先の URL などの詳細はログにだけ出す
+          IO.println(s"[skuaka] skaka call failed: $e").as(Left("skaka に接続できませんでした")))
     }
 
   /** 会議室を作り、その URL を返す（名前は予定のタイトル. 100文字まで）. */
@@ -91,7 +93,7 @@ final class SkakaRoutes(skaka: Option[SkakaService], val sessions: SessionAuth, 
 
   /** 戻り先（同じサイトのパスだけ）に結果を付けて戻る. */
   private def done(returnTo: String, result: String): IO[Response[IO]] =
-    val back = Option(returnTo).filter(p => p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")).getOrElse("/settings")
+    val back = SafePath.of(Option(returnTo), "/settings")
     redirect(back + (if back.contains("?") then "&" else "?") + s"integration=skaka&result=$result")
 
   private def enabled(f: SkakaService => IO[Response[IO]]): IO[Response[IO]] =

@@ -1,5 +1,6 @@
 package skuaka.api
 
+import cats.data.OptionT
 import cats.effect.*
 import cats.syntax.all.*
 import io.circe.Decoder
@@ -8,6 +9,7 @@ import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import org.typelevel.ci.CIString
 import org.http4s.headers.{`WWW-Authenticate`, Authorization}
+import org.http4s.server.middleware.EntityLimiter
 import skuaka.auth.{ApiTokens, Crypto}
 import skuaka.db.*
 import skuaka.shared.*
@@ -22,6 +24,7 @@ final case class ApiConfig(
     sessionTtl: FiniteDuration = 14.days,
     cookieName: String = "skuaka_session",
     devLogin: Boolean = false,
+    rateLimit: RateLimitConfig = RateLimitConfig(),
     version: String = "0.1.0"
 )
 
@@ -103,6 +106,7 @@ trait RouteSupport extends Http4sDsl[IO]:
 
   protected def body[A: Decoder](req: Request[IO])(f: A => IO[Response[IO]]): IO[Response[IO]] =
     req.as[A].attempt.flatMap {
+      case Left(_: EntityLimiter.EntityTooLarge) => err(Status.PayloadTooLarge, ApiRoutes.TooLargeMessage)
       case Left(e)  => err(Status.BadRequest, s"リクエストの内容が正しくありません: ${e.getMessage.take(200)}")
       case Right(b) => f(b)
     }
@@ -125,6 +129,22 @@ object Check:
   def text(v: String, what: String, max: Int): Either[String, String] =
     Either.cond(v.length <= max, v, s"$what は $max 文字以内にしてください")
 
+/**
+ * すべての応答に付けるセキュリティのヘッダー. CSP は応答が自分で付けていなければ、何も読み込ませないもの
+ * （API・エラーの画面向け. 画面の配信は画面に合わせた CSP を付ける）. hsts は HTTPS で公開しているとき.
+ */
+object SecurityHeaders:
+  val StrictCsp = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+  def apply(routes: HttpRoutes[IO], hsts: Boolean): HttpRoutes[IO] =
+    val fixed = List[Header.ToRaw]("X-Content-Type-Options" -> "nosniff", "X-Frame-Options" -> "DENY",
+      "Referrer-Policy" -> "strict-origin-when-cross-origin") ++
+      Option.when(hsts)("Strict-Transport-Security" -> "max-age=31536000").toList.map(h => h: Header.ToRaw)
+    routes.map { r =>
+      val withCsp = if r.headers.get(CIString("Content-Security-Policy")).isDefined then r else r.putHeaders("Content-Security-Policy" -> StrictCsp)
+      withCsp.putHeaders(fixed*)
+    }
+
 /** アプリのルートをまとめる（REST API・iCalendar の配信・MCP）. MCP は REST API をトークンで内部から呼ぶ. */
 object ApiRoutes:
   def apply(oidc: Option[skuaka.auth.OidcClient], users: UserStore, calendars: CalendarStore, events: EventStore, sess: SessionAuth,
@@ -133,4 +153,13 @@ object ApiRoutes:
       new CalendarRoutes(calendars, events, users, sess, cfg).routes <+>
       new EventRoutes(events, calendars, users, sess, skaka).routes <+>
       new SkakaRoutes(skaka, sess, cfg).routes
-    rest <+> new McpRoutes(rest, sess, cfg.publicUrl, cfg.version).routes
+    // 本文は MaxBody まで（大きな本文でメモリを使い切らせない. アイコンの 1MB より大きくしておく）.
+    // Content-Length が超えていれば、EntityLimiter はルートに入る前に例外にするので、ここで 413 にする
+    val limited = EntityLimiter.httpRoutes(rest <+> new McpRoutes(rest, sess, cfg.publicUrl, cfg.version).routes, MaxBody)
+    val all = HttpRoutes[IO](req => limited(req).recoverWith { case _: EntityLimiter.EntityTooLarge => OptionT.liftF(tooLarge) })
+    SecurityHeaders(RateLimit(all, cfg.rateLimit), cfg.cookieSecure)
+
+  val MaxBody: Long = 2L * 1024 * 1024
+
+  private def tooLarge: IO[Response[IO]] = IO.pure(Response[IO](Status.PayloadTooLarge).withEntity(ErrorDto(TooLargeMessage)))
+  val TooLargeMessage = "リクエストの本文が大きすぎます"

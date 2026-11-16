@@ -1,6 +1,7 @@
 package skuaka.api
 
 import cats.effect.*
+import cats.syntax.all.*
 import io.circe.Json
 import io.circe.syntax.*
 import org.http4s.*
@@ -140,6 +141,60 @@ class FlowSpec extends munit.CatsEffectSuite:
       _   = assertEquals(r2.status, Status.Forbidden)
       r3 <- app.run(Request[IO](Method.GET, uri"/api/calendars"))
       _   = assertEquals(r3.status, Status.Unauthorized)
+    yield ()
+  }
+
+  test("戻り先は同じサイトのパスだけ. 別のサイトへ飛ばす書き方は / にする") {
+    val ok = List("/", "/week", "/settings?tab=a&b=1", "/p/AbC-_9", "/day/2026-11-16#x", "/%E4%BA%88")
+    ok.foreach(p => assertEquals(SafePath.of(Some(p)), p))
+    val ng = List("//evil.example", "/\\evil.example", "/\t/evil.example", "/\n/evil.example", "https://evil.example", "evil", "", " //x",
+      "/a b", "/<script>", "/\"x")
+    ng.foreach(p => assertEquals(SafePath.of(Some(p)), "/", p))
+    assertEquals(SafePath.of(None, "/settings"), "/settings")
+    val (_, app, _) = fixture()
+    // ログインの戻り先も同じ確認をする（不正なら / に戻る）
+    app.run(Request[IO](Method.GET, Uri.unsafeFromString("/auth/login?returnTo=%2F%09%2Fevil.example"))).map(r => assertEquals(r.status, Status.Found))
+  }
+
+  test("応答にセキュリティのヘッダーが付く. 大きすぎる本文は 413 で断る") {
+    for
+      t  <- login("堀 十一", "hori@sec.example.com")
+      r1 <- call(t, Method.GET, "/api/me")
+      h   = (k: String) => r1.headers.get(CIString(k)).map(_.head.value)
+      _   = assertEquals((h("X-Content-Type-Options"), h("X-Frame-Options"), h("Content-Security-Policy")),
+              (Some("nosniff"), Some("DENY"), Some(SecurityHeaders.StrictCsp)))
+      _   = assertEquals(h("Strict-Transport-Security"), None) // http で公開しているときは付けない
+      r2 <- call(t, Method.POST, "/api/calendars", Some(Json.obj("name" -> ("x" * (ApiRoutes.MaxBody.toInt + 10)).asJson)))
+      _   = assertEquals(r2.status, Status.PayloadTooLarge)
+    yield ()
+  }
+
+  test("IP ごとの回数の制限: ログイン・公開リンクだけ. 信じるプロキシからだけ X-Forwarded-For を使う. IPv6 は /64 でまとめる") {
+    import com.comcast.ip4s.*
+    def from(ip: String, path: String, xff: Option[String] = None): Request[IO] =
+      val conn = Request.Connection(SocketAddress(ip"127.0.0.1", port"8080"), SocketAddress(IpAddress.fromString(ip).get, port"50000"), false)
+      val r = Request[IO](Method.GET, Uri.unsafeFromString(path)).withAttribute(Request.Keys.ConnectionInfo, conn)
+      xff.fold(r)(v => r.putHeaders(Header.Raw(CIString("X-Forwarded-For"), v)))
+    val trusted = List("10.0.0.0/8", "192.0.2.7").flatMap(RateLimitConfig.proxy)
+    assertEquals(RateLimit.clientKey(from("10.1.2.3", "/", Some("6.6.6.6, 203.0.113.9")), trusted), Some("203.0.113.9"))
+    assertEquals(RateLimit.clientKey(from("10.1.2.3", "/", Some("203.0.113.9, 192.0.2.7")), trusted), Some("203.0.113.9"))
+    assertEquals(RateLimit.clientKey(from("198.51.100.1", "/", Some("6.6.6.6")), trusted), Some("198.51.100.1")) // 直接来た人は偽れない
+    assertEquals(RateLimit.clientKey(from("2001:db8:1:2:3:4:5:6", "/"), trusted), Some("2001:db8:1:2::/64"))
+    assertEquals(RateLimit.clientKey(Request[IO](), trusted), None)
+    var now = scala.concurrent.duration.FiniteDuration(10, "minutes")
+    val ok  = HttpRoutes.of[IO] { case _ => IO.pure(Response[IO](Status.Ok)) }
+    val app = RateLimit(ok, RateLimitConfig(authPerMinute = 3, publicPerMinute = 1, trusted), IO(now)).orNotFound
+    for
+      a  <- (1 to 4).toList.traverse(_ => app.run(from("203.0.113.5", "/auth/login")))
+      _   = assertEquals(a.map(_.status.code), List(200, 200, 200, 429))
+      _   = assertEquals(a.last.headers.get(CIString("Retry-After")).map(_.head.value), Some("60"))
+      b  <- app.run(from("203.0.113.6", "/auth/login"))              // 別の人は使える
+      c  <- app.run(from("203.0.113.5", "/api/me"))                  // ログインした後の API は数えない
+      d  <- (1 to 2).toList.traverse(_ => app.run(from("203.0.113.5", "/ics/x.ics")))
+      _   = assertEquals((b.status.code, c.status.code, d.map(_.status.code)), (200, 200, List(200, 429)))
+      _   = now = now + scala.concurrent.duration.FiniteDuration(1, "minute") // 次の1分になれば、また使える
+      e  <- app.run(from("203.0.113.5", "/auth/login"))
+      _   = assertEquals(e.status.code, 200)
     yield ()
   }
 

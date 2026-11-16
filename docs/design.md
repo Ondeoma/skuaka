@@ -9,6 +9,15 @@
 - セッションはランダムな値の Cookie（HttpOnly・SameSite=Lax・https なら Secure）。DB にはその SHA-256 だけを保存する。ID トークンは
   ログアウトのときの `id_token_hint` のために保存する。
 - CSRF: GET 以外の API は `X-Skuaka` ヘッダーが必要（ほかのサイトのフォームからは付けられない）。
+- ログインや連携の後の戻り先は `SafePath`（サーバーと画面で共通）で同じサイトのパスだけに絞る。`//`・`\`・タブや改行を含むものは `/` にする。
+- 応答には `X-Content-Type-Options`・`X-Frame-Options: DENY`・`Referrer-Policy` と CSP を付ける（`SecurityHeaders`）。API とエラーの画面は
+  何も読み込ませない CSP、画面の配信はスクリプトを自分のサイトと `index.html` の直書き（SHA-256 のハッシュ）だけに絞る CSP。https で公開
+  しているときは HSTS も付ける。リクエストの本文は 2MB まで（`ApiRoutes.MaxBody`）。
+- ログインしなくても使える入口（ログインの `/auth/…`、公開リンクの `/api/public/…`・`/ics/…`）は、IP ごとに1分あたりの回数を制限する
+  （`RateLimit`。超えたら 429 と `Retry-After`）。利用者の IP は、`TRUSTED_PROXIES` のプロキシから来た要求だけ `X-Forwarded-For` を右から
+  たどって決める（左側はクライアントが書けるので使わない）。IPv6 は /64 ごとにまとめる。数はノードごとのメモリで数える。
+- 開発用のログイン（`DEV_LOGIN`）は名前だけでだれにでもなれるので、`PUBLIC_URL` が localhost のときしか起動しない。
+- ログインの失敗や外部サービスのエラーの詳細（検証に失敗した項目・中継先の URL など）はログにだけ出し、画面には出さない。
 - ログアウトは、IdP の `end_session_endpoint` があればそこへ（`id_token_hint`・`post_logout_redirect_uri` 付き）。なければ skuaka のログイン画面へ。
 - ユーザーは `sub` で識別し、ログインのたびに名前・メール・アイコンを IdP の値に合わせる。初めてのログインで自分のカレンダーを作る。
 - 自分で保存したアイコンは `user_avatar` に画像のまま置き、IdP のアイコン（`avatar_url`）より優先する。画面で 256×256 にしてから送り、

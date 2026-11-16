@@ -92,11 +92,13 @@ Docker: `scripts/dist.sh` のあと `docker build -f deploy/docker/app.Dockerfil
 | `OIDC_GROUPS_CLAIM` / `OIDC_ALLOWED_GROUPS` | 所属グループのクレーム名（既定 `groups`）と、ログインを許すグループ（カンマ区切り。未設定ならだれでも） |
 | `SESSION_DAYS` | ログインの有効日数（既定 14） |
 | `HTTP_PORT` | 待ち受けるポート（既定 8080） |
+| `RATE_LIMIT_AUTH` / `RATE_LIMIT_PUBLIC` | IP ごとの1分あたりの回数の上限。ログイン（`/auth/…`、既定 20）と公開リンク（`/api/public/…`・`/ics/…`、既定 120）。0 で制限しない。超えたら 429 |
+| `TRUSTED_PROXIES` | リバースプロキシの IP か CIDR（カンマ区切り）。そこから来た要求だけ `X-Forwarded-For` から利用者の IP を読む。未設定なら直接つないできた相手の IP で数える |
 | `STATIC_DIR` | ビルド済みの画面（`dist/static`） |
 | `APP_SECRET` | 秘密の値（連携のトークン）を暗号化する鍵（16文字以上. skaka と連携するときは必須） |
 | `SKAKA_URL` / `SKAKA_CLIENT_ID` / `SKAKA_CLIENT_SECRET` | Web 会議（skaka）との連携（3つとも設定したときだけ）。skaka には Redirect URI `${PUBLIC_URL}/api/integrations/skaka/callback` を登録する |
 | `SKAKA_INTERNAL_URL` | サーバーから skaka を呼ぶ URL（省けば `SKAKA_URL`） |
-| `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定しない場合のみ。本番では使わない） |
+| `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定せず、`PUBLIC_URL` が localhost の場合のみ。本番では使えない） |
 
 ### OIDC の IdP の設定
 

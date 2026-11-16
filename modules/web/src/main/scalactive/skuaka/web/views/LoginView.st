@@ -1,5 +1,6 @@
 <script lang="scala">
 import skuaka.web.*
+import skuaka.shared.SafePath
 import org.scalajs.dom
 
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
@@ -11,7 +12,7 @@ case class State(name: RV[String] = RV(""), email: RV[String] = RV(""), error: R
 def initState() = State()
 
 def param(k: String): Option[String] = Option(new dom.URL(dom.window.location.href).searchParams.get(k))
-def returnTo(): String = param("returnTo").filter(p => p.startsWith("/") && !p.startsWith("//")).getOrElse("/")
+def returnTo(): String = SafePath.of(param("returnTo"))
 def loggedOut: Boolean = param("loggedOut").isDefined
 
 def login(s: State): Unit =
