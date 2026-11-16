@@ -24,6 +24,8 @@ object ApiCatalog:
   val all: List[Endpoint] = List(
     Endpoint("GET", "/api/me", "自分の情報（名前・メール・タイムゾーン）"),
     Endpoint("PATCH", "/api/me", "自分の名前・タイムゾーンを変える {name?, timezone?}"),
+    Endpoint("PUT", "/api/me/avatar", "自分のアイコンを保存する（本文は画像そのもの. PNG・JPEG・GIF・WebP、1MB まで）"),
+    Endpoint("DELETE", "/api/me/avatar", "保存したアイコンを消す（IdP の画像に戻る）"),
     Endpoint("GET", "/api/users?q=", "ユーザーを名前・メールで探す"),
     Endpoint("GET", "/api/calendars", "見られるカレンダーの一覧（自分の権限 busy|view|edit|owner. busy は予定あり・なしのみ）"),
     Endpoint("POST", "/api/calendars", "カレンダーを作る {name, color: #rrggbb, description, teamAccess?: none|busy|view}"),

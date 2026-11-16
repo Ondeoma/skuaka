@@ -11,6 +11,10 @@
 - CSRF: GET 以外の API は `X-Skuaka` ヘッダーが必要（ほかのサイトのフォームからは付けられない）。
 - ログアウトは、IdP の `end_session_endpoint` があればそこへ（`id_token_hint`・`post_logout_redirect_uri` 付き）。なければ skuaka のログイン画面へ。
 - ユーザーは `sub` で識別し、ログインのたびに名前・メール・アイコンを IdP の値に合わせる。初めてのログインで自分のカレンダーを作る。
+- 自分で保存したアイコンは `user_avatar` に画像のまま置き、IdP のアイコン（`avatar_url`）より優先する。画面で 256×256 にしてから送り、
+  サーバーは先頭のバイトで PNG・JPEG・GIF・WebP だけを受け付ける（SVG はスクリプトを含められるので断る. 1MB まで）。
+  表示する URL は `UserCols.avatar`（SQL）で決め、保存した画像は `/api/users/{id}/avatar?v={avatar_version}`。版を URL に付けるので、
+  長くキャッシュしても変えればすぐ切り替わる。画像はログインした人だけが読める（`nosniff`・`default-src 'none'` 付き）。
 
 ## API トークンと MCP
 

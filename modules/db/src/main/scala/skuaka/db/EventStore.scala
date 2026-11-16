@@ -100,8 +100,8 @@ final class EventStore(xa: Transactor[IO]) extends TxStore(xa):
   )
 
   def attendees(id: UUID): IO[List[AttendeeDto]] = tx(
-    sql"""select u.id, u.name, u.email, u.avatar_url, a.response from event_attendee a join app_user u on u.id = a.user_id
-          where a.event_id = $id order by u.name"""
+    (fr"select u.id, u.name, u.email," ++ UserCols.avatar("u") ++ fr""", a.response from event_attendee a join app_user u on u.id = a.user_id
+          where a.event_id = $id order by u.name""")
       .query[(UUID, String, Option[String], Option[String], String)].map((i, n, e, av, r) => AttendeeDto(UserBrief(i, n, e, av), r)).to[List]
   )
 

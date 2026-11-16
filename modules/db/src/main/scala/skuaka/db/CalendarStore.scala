@@ -79,8 +79,8 @@ final class CalendarStore(xa: Transactor[IO], users: UserStore) extends TxStore(
   def delete(id: UUID): IO[Unit] = tx(sql"delete from calendar where id = $id and not is_primary".update.run.void)
 
   def members(id: UUID): IO[List[MemberDto]] = tx(
-    sql"""select u.id, u.name, u.email, u.avatar_url, m.role from calendar_member m join app_user u on u.id = m.user_id
-          where m.calendar_id = $id and m.role <> 'team' order by (m.role = 'owner') desc, u.name"""
+    (fr"select u.id, u.name, u.email," ++ UserCols.avatar("u") ++ fr""", m.role from calendar_member m join app_user u on u.id = m.user_id
+          where m.calendar_id = $id and m.role <> 'team' order by (m.role = 'owner') desc, u.name""")
       .query[(UUID, String, Option[String], Option[String], String)].map((i, n, e, a, r) => MemberDto(UserBrief(i, n, e, a), r)).to[List]
   )
 

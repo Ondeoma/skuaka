@@ -13,7 +13,7 @@ import skuaka.shared.*
 
 import java.time.Instant
 
-/** ログイン（OIDC・開発用）・ログアウト・自分の情報・ユーザーの検索. */
+/** ログイン（OIDC・開発用）・ログアウト・自分の情報とアイコン・ユーザーの検索. */
 final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: CalendarStore, val sessions: SessionAuth, cfg: ApiConfig)
     extends RouteSupport:
 
@@ -24,6 +24,9 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
   private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] =
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)), "Cache-Control" -> "no-store")
     IO.pure(cookie.fold(r)(r.addCookie))
+
+  /** 変更した後の自分の情報. */
+  private def me(u: User): IO[Response[IO]] = users.find(u.id).flatMap(x => Ok(x.getOrElse(u).me))
 
   /** ログインした人のカレンダーを用意してから、セッションを発行する. */
   private def loggedIn(u: User, idToken: Option[String]): IO[ResponseCookie] =
@@ -103,8 +106,35 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
         val tz = r.timezone.map(_.trim).filter(_.nonEmpty)
         if tz.exists(z => skuaka.core.Time.zone(z).isEmpty) then err(Status.BadRequest, "タイムゾーンが正しくありません")
         else if r.name.exists(_.trim.length > 100) then err(Status.BadRequest, "名前は100文字以内にしてください")
-        else users.updateMe(u.id, r.name, tz) *> users.find(u.id).flatMap(x => Ok(x.getOrElse(u).me))
+        else users.updateMe(u.id, r.name, tz) *> me(u)
       })
+
+    // アイコン: 画像そのもの（PNG・JPEG・GIF・WebP、1MB まで）を本文にして送る. 消すと IdP の画像に戻る
+    case req @ PUT -> Root / "api" / "me" / "avatar" =>
+      authed(req) { u =>
+        req.body.take(AvatarImage.MaxBytes + 1L).compile.to(Array).flatMap { data =>
+          if data.length > AvatarImage.MaxBytes then err(Status.PayloadTooLarge, "画像は1MBまでにしてください")
+          else AvatarImage.detect(data).fold(err(Status.UnsupportedMediaType, "PNG・JPEG・GIF・WebP の画像を選んでください")) { ct =>
+            users.saveAvatar(u.id, ct, data) *> me(u)
+          }
+        }
+      }
+
+    case req @ DELETE -> Root / "api" / "me" / "avatar" =>
+      authed(req)(u => users.deleteAvatar(u.id) *> me(u))
+
+    // URL の v（版）が変われば別の画像なので、長くキャッシュしてよい
+    case req @ GET -> Root / "api" / "users" / UuidVar(id) / "avatar" =>
+      authed(req) { _ =>
+        users.avatar(id).flatMap {
+          case None => err(Status.NotFound, "アイコンがありません")
+          case Some((ct, data)) =>
+            // JSON の変換が優先されないよう、バイト列のまま返す
+            IO.pure(Response[IO](Status.Ok).withBodyStream(fs2.Stream.emits(data)).putHeaders(
+              headers.`Content-Type`(MediaType.unsafeParse(ct)), "Cache-Control" -> "private, max-age=31536000, immutable",
+              "X-Content-Type-Options" -> "nosniff", "Content-Security-Policy" -> "default-src 'none'"))
+        }
+      }
 
     case req @ GET -> Root / "api" / "users" =>
       authed(req)(_ => users.search(param(req, "q").getOrElse(""), 20).flatMap(Ok(_)))

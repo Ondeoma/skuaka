@@ -10,14 +10,22 @@ import skuaka.shared.*
 import java.time.Instant
 import java.util.UUID
 
-final case class User(id: UUID, sub: String, name: String, email: Option[String], avatarUrl: Option[String], timezone: String, disabled: Boolean):
-  def me: MeDto        = MeDto(id, name, email, avatarUrl, timezone)
+/** avatarUrl は表示するアイコン（保存したものがあればその URL、なければ IdP の画像）. */
+final case class User(id: UUID, sub: String, name: String, email: Option[String], avatarUrl: Option[String], timezone: String, disabled: Boolean,
+    avatarUploaded: Boolean):
+  def me: MeDto        = MeDto(id, name, email, avatarUrl, timezone, avatarUploaded)
   def brief: UserBrief = me.brief
+
+/** app_user の列（別名 a）. */
+object UserCols:
+  /** 表示するアイコンの URL. 保存したアイコンがあれば /api/users/{id}/avatar?v={版}（版を変えるとブラウザのキャッシュが切り替わる）. */
+  def avatar(a: String): Fragment = Fragment.const(
+    s"(case when $a.avatar_version is not null then '/api/users/' || $a.id || '/avatar?v=' || $a.avatar_version else $a.avatar_url end)")
 
 /** ユーザー・セッション・ログイン途中の状態. */
 final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
 
-  private val cols = fr"id, sub, name, email, avatar_url, timezone, disabled"
+  private val cols = fr"app_user.id, sub, name, email," ++ UserCols.avatar("app_user") ++ fr", timezone, disabled, avatar_version is not null"
 
   /** ログインのたびに作成・更新する（名前・メール・アイコンは IdP の値に合わせる）. */
   def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] = tx(
@@ -55,6 +63,24 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
     val sets = List(name.map(_.trim).filter(_.nonEmpty).map(v => fr"name = $v"), timezone.map(v => fr"timezone = $v")).flatten
     if sets.isEmpty then ().pure[ConnectionIO] else (fr"update app_user" ++ Sql.set(sets) ++ fr"where id = $id").update.run.void
   }
+
+  // ---------------------------------------------------------------- アイコン
+
+  /** アイコンを保存する（版を1つ進める）. */
+  def saveAvatar(id: UUID, contentType: String, data: Array[Byte]): IO[Unit] = tx(
+    sql"""insert into user_avatar (user_id, content_type, data) values ($id, $contentType, $data)
+          on conflict (user_id) do update set content_type = excluded.content_type, data = excluded.data, updated_at = now()""".update.run *>
+      sql"update app_user set avatar_version = coalesce(avatar_version, 0) + 1 where id = $id".update.run.void
+  )
+
+  /** 保存したアイコンを消す（IdP の画像に戻る）. */
+  def deleteAvatar(id: UUID): IO[Unit] = tx(
+    sql"delete from user_avatar where user_id = $id".update.run *> sql"update app_user set avatar_version = null where id = $id".update.run.void
+  )
+
+  def avatar(id: UUID): IO[Option[(String, Array[Byte])]] = tx(
+    sql"select content_type, data from user_avatar where user_id = $id".query[(String, Array[Byte])].option
+  )
 
   // ---------------------------------------------------------------- セッション
 

@@ -17,15 +17,19 @@ final case class ApiError(status: Int, message: String) extends Exception(messag
 /** バックエンドの REST API. 401 はログインへ、エラーは {"error": ...} の文言にする. */
 object Api {
 
-  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] = {
+  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] =
+    send(method, url, body.map(b => (b.noSpaces, "application/json")))
+
+  /** 本文（と Content-Type）を付けて送る. JSON 以外（画像など）もそのまま送れる. */
+  private def send(method: dom.HttpMethod, url: String, payload: Option[(dom.BodyInit, String)]): Future[Option[Json]] = {
     val init = new dom.RequestInit {}
     init.method = method
     init.credentials = dom.RequestCredentials.`same-origin`
     // 更新の要求には X-Skuaka を付ける（サーバーはこれのない更新を CSRF として断る）
     val hs = js.Dictionary[String]("X-Skuaka" -> "1")
-    body.foreach { b =>
-      hs("Content-Type") = "application/json"
-      init.body = b.noSpaces
+    payload.foreach { (b, ct) =>
+      hs("Content-Type") = ct
+      init.body = b
     }
     init.headers = hs
     dom.fetch(url, init).toFuture.flatMap { res =>
@@ -63,6 +67,9 @@ object Api {
   def logout(): Future[String] = post[Json]("/auth/logout").map(_.hcursor.get[String]("redirect").getOrElse("/"))
   def users(q: String): Future[List[UserBrief]] = get[List[UserBrief]]("/api/users?q=" + enc(q))
   def updateMe(r: UpdateMeReq): Future[MeDto] = patch[MeDto]("/api/me", r.asJson)
+  /** アイコンを保存する（画像そのものを送る）・消す. */
+  def uploadAvatar(image: dom.Blob): Future[MeDto] = send(dom.HttpMethod.PUT, "/api/me/avatar", Some((image, image.`type`))).map(as[MeDto])
+  def deleteAvatar(): Future[MeDto] = send(dom.HttpMethod.DELETE, "/api/me/avatar", None).map(as[MeDto])
 
   // ---------------------------------------------------------------- API トークン
 

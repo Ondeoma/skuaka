@@ -230,9 +230,11 @@ class FlowSpec extends munit.CatsEffectSuite:
       _     = assert(!ue, u1)
       (l2, _) <- mcp(rw, "list_events", Json.obj("from" -> "2026-11-23".asJson, "to" -> "2026-11-23".asJson))
       _     = assert(l2.contains("2026/11/23(月) 14:00–15:00 週次MTG"), l2)
-      // 空き時間（11/16 の 9:00〜12:00 で 60分）
-      (f1, _) <- mcp(rw, "find_free_time", Json.obj("from" -> "2026-11-16".asJson, "to" -> "2026-11-16".asJson, "durationMinutes" -> 60.asJson,
-                   "dayStart" -> "09:00".asJson, "dayEnd" -> "12:00".asJson))
+      // 空き時間（9:00〜12:00 で 60分. 過ぎた時間は空きにしないので、今日に左右されない先の日で確かめる）
+      (c2, e2) <- mcp(rw, "create_event", Json.obj("title" -> "先の予定".asJson, "start" -> "2099-11-16T10:00".asJson, "end" -> "2099-11-16T11:00".asJson))
+      _     = assert(!e2, c2)
+      (f1, _) <- mcp(rw, "find_free_time", Json.obj("from" -> "2099-11-16".asJson, "to" -> "2099-11-16".asJson, "durationMinutes" -> 60.asJson,
+                   "dayStart" -> "09:00".asJson, "dayEnd" -> "12:00".asJson, "includeWeekends" -> true.asJson))
       _     = assert(f1.contains("09:00–10:00") && f1.contains("11:00–12:00"), f1)
       // 参照のみのトークンで変更すると isError
       (r1, re) <- mcp(ro, "delete_event", Json.obj("eventId" -> id.asJson))
@@ -343,3 +345,44 @@ class FlowSpec extends munit.CatsEffectSuite:
       _     = assertEquals(icsG.status, Status.NotFound)
     yield ()
   }
+
+  /** 本文を画像などのバイト列で送る. */
+  private def upload(token: String, path: String, data: Array[Byte]): IO[Response[IO]] =
+    val (_, app, _) = fixture()
+    app.run(Request[IO](Method.PUT, Uri.unsafeFromString(path)).withBodyStream(fs2.Stream.emits(data))
+      .putHeaders(Cookie(RequestCookie("skuaka_session", token)), Header.Raw(CIString("X-Skuaka"), "1")))
+
+  test("アイコン: 画像を保存すると URL に版が付き、ほかの人からも見える. 画像でないもの・大きすぎるものは断る. 消すと元に戻る") {
+    val png = Array(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a).map(_.toByte) ++ Array.fill[Byte](100)(7)
+    for
+      a    <- login("岡田 九子", "okada@avatar.example.com")
+      b    <- login("西村 十郎", "nishimura@avatar.example.com")
+      me0  <- call(a, Method.GET, "/api/me").flatMap(json[MeDto])
+      _     = assertEquals((me0.avatarUploaded, me0.avatarUrl), (false, None))
+      me1  <- upload(a, "/api/me/avatar", png).flatMap(json[MeDto])
+      _     = assertEquals((me1.avatarUploaded, me1.avatarUrl), (true, Some(s"/api/users/${me0.id}/avatar?v=1")))
+      me2  <- upload(a, "/api/me/avatar", png).flatMap(json[MeDto])
+      _     = assertEquals(me2.avatarUrl, Some(s"/api/users/${me0.id}/avatar?v=2"))
+      // ほかの人から: 検索の結果に URL が出て、画像を読める
+      found <- call(b, Method.GET, "/api/users?q=okada").flatMap(json[List[UserBrief]])
+      _     = assertEquals(found.map(_.avatarUrl), List(me2.avatarUrl))
+      img  <- call(b, Method.GET, s"/api/users/${me0.id}/avatar")
+      bytes <- img.body.compile.to(Array)
+      _     = assertEquals((img.status, img.contentType.map(c => s"${c.mediaType.mainType}/${c.mediaType.subType}"), bytes.toList), (Status.Ok, Some("image/png"), png.toList))
+      _     = assert(img.headers.get(CIString("X-Content-Type-Options")).isDefined)
+      // ログインしていなければ読めない
+      anon <- call("", Method.GET, s"/api/users/${me0.id}/avatar")
+      _     = assertEquals(anon.status, Status.Unauthorized)
+      // SVG（スクリプトを含められる）・画像でないもの・大きすぎるものは断る
+      svg  <- upload(a, "/api/me/avatar", """<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>""".getBytes("UTF-8"))
+      _     = assertEquals(svg.status, Status.UnsupportedMediaType)
+      big  <- upload(a, "/api/me/avatar", png ++ Array.fill[Byte](AvatarImage.MaxBytes)(0))
+      _     = assertEquals(big.status, Status.PayloadTooLarge)
+      // 消すと元に戻る（画像も読めなくなる）
+      me3  <- call(a, Method.DELETE, "/api/me/avatar").flatMap(json[MeDto])
+      _     = assertEquals((me3.avatarUploaded, me3.avatarUrl), (false, None))
+      gone <- call(b, Method.GET, s"/api/users/${me0.id}/avatar")
+      _     = assertEquals(gone.status, Status.NotFound)
+    yield ()
+  }
+
