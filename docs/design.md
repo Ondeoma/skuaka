@@ -60,3 +60,14 @@
 - Scalactive（Vue 風の `.st` 単一ファイルコンポーネント）。画面の日時はブラウザのタイムゾーンで、API とは ISO 8601 の UTC の文字列でやり取りする。
 - 表示中の期間の予定（展開済み）をまとめて読み、表示するカレンダーの絞り込みは画面で行う（すぐ切り替わる）。
 - 日本の祝日は画面で計算する（祝日法。春分・秋分は近似式）。
+
+## Web 会議（skaka）との連携
+
+- 各ユーザーが設定の画面で連携する: `/api/integrations/skaka/connect` で state と PKCE の verifier を DB（`integration_state`. 10分・1回だけ）に置いて
+  skaka の許可の画面へ。`/callback` で認可コードをトークン（`skaka_…`）に替え、`APP_SECRET` の鍵（AES-256-GCM）で暗号化して `integration_token` に保存する。
+  連携をやめると skaka の `/oauth/revoke` も呼ぶ。
+- 会議室は予定の API（`EventReq.withMeeting`）で作る（MCP の `create_event`・`update_event` も同じ）。予定を保存してから skaka の `POST /api/rooms` を呼び、
+  場所に URL を足す（空なら URL だけ、あれば「{場所} / {URL}」. `Meeting`）。作れなくても予定は残し、理由を `EventDto.meetingError` で返す。
+  場所に既に skaka の URL があれば作らない。
+- 「すべて」の変更で題名・日時が変わったら、場所の URL のコードで `PUT /api/rooms/{code}/event` を呼ぶ（失敗しても保存は止めない）。
+- skaka が 401 を返したらトークンの失効なので、保存したトークンを消して「連携が切れた」と扱う。

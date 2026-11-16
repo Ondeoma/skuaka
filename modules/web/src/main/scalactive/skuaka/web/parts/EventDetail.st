@@ -17,6 +17,7 @@ def when(props: Props): String = Store.timeText(props.occ, withDate = true)
 
 def repeatText(s: State) = s.ev.mapC(_.flatMap(_.recurrence).map(_.describe).getOrElse(""))
 def desc(s: State) = s.ev.mapC(_.map(_.description).getOrElse(""))
+def meeting(props: Props): Option[String] = Store.meetingUrl(props.occ.location)
 def reminderText(s: State) = s.ev.mapC(_.map(_.reminders).filter(_.nonEmpty).map(Reminders.text).getOrElse(""))
 def guests(s: State) = s.ev.mapC(_.map(_.attendees).getOrElse(Nil))
 // 公開リンクで見ているときは主催者を出さない（持ち主のカレンダーなので）
@@ -63,7 +64,9 @@ def leave(props: Props): Unit =
         <div v-if="props.occ.busy" class="muted small">予定あり・なしだけが公開されているため、内容は表示されません</div>
       </div>
     </div>
-    <div v-if="props.occ.location.nonEmpty" class="line"><span class="ic">📍</span><span>{{ props.occ.location }}</span></div>
+    <div v-if="props.occ.location.nonEmpty" class="line"><span class="ic">📍</span><span class="loc">{{ props.occ.location }}</span></div>
+    <div v-if="meeting(props).isDefined" class="line"><span class="ic">🎥</span>
+      <a class="btn primary" :href='meeting(props).getOrElse("")' target="_blank" rel="noopener">Web 会議に参加</a></div>
     <div v-if="hasGuests(s)" class="line">
       <span class="ic">👥</span>
       <div class="grow">
@@ -97,6 +100,7 @@ def leave(props: Props): Unit =
 .ic { width: 16px; text-align: center; flex: none; }
 .t { margin: 0 0 .2rem; font-size: 1.4rem; font-weight: 500; word-break: break-word; }
 .desc { white-space: pre-wrap; word-break: break-word; }
+.loc { word-break: break-all; }
 .guest { display: flex; align-items: center; gap: .5rem; padding: .25rem 0; }
 .mk { font-weight: 700; width: 1.2rem; text-align: center; }
 .mk.accepted { color: var(--ok); }

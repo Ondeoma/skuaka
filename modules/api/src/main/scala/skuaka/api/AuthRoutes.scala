@@ -14,7 +14,8 @@ import skuaka.shared.*
 import java.time.Instant
 
 /** ログイン（OIDC・開発用）・ログアウト・自分の情報とアイコン・ユーザーの検索. */
-final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: CalendarStore, val sessions: SessionAuth, cfg: ApiConfig)
+final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: CalendarStore, val sessions: SessionAuth, cfg: ApiConfig,
+    skakaUrl: Option[String] = None)
     extends RouteSupport:
 
   /** ログイン後に戻る先（同じサイトのパスだけ）. */
@@ -97,7 +98,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
       }
 
     case GET -> Root / "api" / "client-config" =>
-      Ok(ClientConfigDto(cfg.devLogin && oidc.isEmpty, oidc.isDefined, cfg.version))
+      Ok(ClientConfigDto(cfg.devLogin && oidc.isEmpty, oidc.isDefined, cfg.version, skakaUrl))
 
     case req @ GET -> Root / "api" / "me" => authed(req)(u => Ok(u.me))
 

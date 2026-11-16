@@ -11,6 +11,7 @@ import org.http4s.implicits.*
 import org.typelevel.ci.CIString
 import skuaka.auth.{OidcClient, OidcConfig}
 import skuaka.db.*
+import doobie.implicits.*
 import skuaka.devidp.DevIdp
 import skuaka.shared.*
 
@@ -26,6 +27,42 @@ class FlowSpec extends munit.CatsEffectSuite:
   private val issuer = "http://localhost:9999"
   private val apiCfg = ApiConfig(cookieSecure = false, publicUrl = "http://localhost:8095")
 
+  // ---------------------------------------------------------------- 偽の skaka（Web 会議）
+
+  private val skakaUrl   = "http://skaka.test"
+  /** 偽の skaka が受けた要求（"POST /api/rooms {...}" など）と、発行したトークンが有効か. */
+  private val skakaCalls = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+  private val skakaValid = new java.util.concurrent.atomic.AtomicBoolean(true)
+  private val roomSeq    = new java.util.concurrent.atomic.AtomicInteger(0)
+
+  private val fakeSkaka: HttpRoutes[IO] =
+    import org.http4s.dsl.io.*
+    val basicOk = (r: Request[IO]) => r.headers.get[org.http4s.headers.Authorization].exists(_.credentials ==
+      org.http4s.headers.Authorization(BasicCredentials("skuaka", "skuaka-test-secret-0123456789")).credentials)
+    val bearerOk = (r: Request[IO]) => skakaValid.get && r.headers.get[org.http4s.headers.Authorization].exists(_.credentials ==
+      Credentials.Token(AuthScheme.Bearer, "skaka_test"))
+    HttpRoutes.of[IO] {
+      case r @ POST -> Root / "oauth" / "token" if basicOk(r) =>
+        r.as[UrlForm].flatMap { f =>
+          skakaCalls.add(s"token ${f.getFirst("code").getOrElse("")} ${f.getFirst("redirect_uri").getOrElse("")}")
+          if f.getFirst("code").contains("good-code") && f.getFirst("code_verifier").exists(_.length >= 43) then
+            skakaValid.set(true); Ok(Json.obj("access_token" -> "skaka_test".asJson, "token_type" -> "Bearer".asJson))
+          else BadRequest()
+        }
+      case r @ POST -> Root / "oauth" / "revoke" if basicOk(r) =>
+        r.as[UrlForm].flatMap(f => IO(skakaCalls.add(s"revoke ${f.getFirst("token").getOrElse("")}")) *> Ok())
+      case r @ POST -> Root / "api" / "rooms" =>
+        if !bearerOk(r) then IO.pure(Response[IO](Status.Unauthorized))
+        else r.as[Json].flatMap { j =>
+          val code = s"room-${roomSeq.incrementAndGet()}"
+          skakaCalls.add(s"POST /api/rooms ${j.noSpaces}")
+          Created(Json.obj("code" -> code.asJson, "url" -> s"$skakaUrl/r/$code".asJson))
+        }
+      case r @ PUT -> Root / "api" / "rooms" / code / "event" =>
+        if !bearerOk(r) then IO.pure(Response[IO](Status.Unauthorized))
+        else r.as[Json].flatMap(j => IO(skakaCalls.add(s"PUT /api/rooms/$code/event ${j.noSpaces}")) *> Ok(Json.obj()))
+    }
+
   /** IdP とアプリ（ルート）を用意する. DB はまっさらにする. */
   private val fixture = ResourceSuiteLocalFixture("app", for
     _  <- Resource.eval(IO.blocking {
@@ -40,7 +77,9 @@ class FlowSpec extends munit.CatsEffectSuite:
   yield
     val users = new UserStore(xa); val cals = new CalendarStore(xa, users); val events = new EventStore(xa)
     val sess  = new SessionAuth(users, apiCfg)
-    val app = ApiRoutes(Some(oidc), users, cals, events, sess, apiCfg).orNotFound
+    val skaka = new SkakaService(SkakaConfig(skakaUrl, skakaUrl, "skuaka", "skuaka-test-secret-0123456789"), Client.fromHttpApp(fakeSkaka.orNotFound),
+      new IntegrationStore(xa), new skuaka.auth.SecretBox("test-app-secret-0123456789"))
+    val app = ApiRoutes(Some(oidc), users, cals, events, sess, apiCfg, Some(skaka)).orNotFound
     (idp.routes.orNotFound, app, xa))
 
   override def munitFixtures = List(fixture)
@@ -383,6 +422,80 @@ class FlowSpec extends munit.CatsEffectSuite:
       _     = assertEquals((me3.avatarUploaded, me3.avatarUrl), (false, None))
       gone <- call(b, Method.GET, s"/api/users/${me0.id}/avatar")
       _     = assertEquals(gone.status, Status.NotFound)
+    yield ()
+  }
+
+  /** skaka との連携: 許可の画面へ移り、戻ってきたらトークンを保存する. */
+  private def connectSkaka(a: String): IO[Unit] =
+    for
+      r1   <- call(a, Method.GET, "/api/integrations/skaka/connect?returnTo=/settings")
+      _     = assertEquals(r1.status, Status.Found)
+      auth  = location(r1)
+      _     = assertEquals((auth.renderString.startsWith(s"$skakaUrl/oauth/authorize?"), auth.params.get("client_id"), auth.params.get("scope"),
+                auth.params.get("code_challenge_method"), auth.params.get("redirect_uri")),
+                (true, Some("skuaka"), Some("read write"), Some("S256"), Some(s"${apiCfg.publicUrl}/api/integrations/skaka/callback")))
+      st    = auth.params("state")
+      r2   <- call(a, Method.GET, s"/api/integrations/skaka/callback?code=good-code&state=$st")
+      _     = assertEquals(location(r2).renderString, "/settings?integration=skaka&result=connected")
+      // 同じ state は2回使えない
+      r3   <- call(a, Method.GET, s"/api/integrations/skaka/callback?code=good-code&state=$st")
+      _     = assertEquals(location(r3).renderString, "/settings?integration=skaka&result=error")
+    yield ()
+
+  test("Web 会議（skaka）: 連携すると予定に会議室を付けられる. 題名・日時を変えると会議室にも伝える. 失効したら連携が切れる. やめると失効させる") {
+    val (_, _, xa) = fixture()
+    def status(t: String) = call(t, Method.GET, "/api/integrations/skaka").flatMap(json[SkakaStatusDto])
+    def ev(cal: UUID, title: String, loc: String, meeting: Boolean) =
+      EventReq(cal, title, "", loc, false, "2026-12-03T01:00:00Z", "2026-12-03T02:00:00Z", "Asia/Tokyo", None, None, Nil, Nil, None,
+        Option.when(meeting)(true))
+    def calls = { val xs = skakaCalls.toArray.toList.map(_.toString); skakaCalls.clear(); xs }
+    for
+      a    <- login("小川 十一", "ogawa@skaka.example.com")
+      cfgD <- call(a, Method.GET, "/api/client-config").flatMap(json[ClientConfigDto])
+      _     = assertEquals(cfgD.skakaUrl, Some(skakaUrl))
+      s0   <- status(a)
+      _     = assertEquals(s0, SkakaStatusDto(true, false, Some(skakaUrl)))
+      cal  <- call(a, Method.GET, "/api/calendars").flatMap(json[List[CalendarDto]]).map(_.head)
+      // 連携していなければ、予定は保存して理由を返す
+      e0   <- call(a, Method.POST, "/api/events", Some(ev(cal.id, "未連携", "", true).asJson)).flatMap(json[EventDto])
+      _     = assert(e0.meetingError.exists(_.contains("連携していません")) && e0.location == "", e0)
+      _     = calls
+      _    <- connectSkaka(a)
+      _     = assertEquals(calls, List(s"token good-code ${apiCfg.publicUrl}/api/integrations/skaka/callback"))
+      s1   <- status(a)
+      _     = assert(s1.connected)
+      // トークンは暗号化して保存する
+      enc  <- sql"select token_enc from integration_token".query[String].to[List].transact(xa)
+      _     = assert(enc.nonEmpty && enc.forall(e => e.startsWith("v1:") && !e.contains("skaka_test")), enc)
+      // 会議室を付ける（場所に URL を足す）
+      e1   <- call(a, Method.POST, "/api/events", Some(ev(cal.id, "設計レビュー", "会議室A", true).asJson)).flatMap(json[EventDto])
+      url   = s"$skakaUrl/r/room-1"
+      _     = assertEquals((e1.location, e1.meetingError), (s"会議室A / $url", None))
+      c1    = calls
+      _     = assert(c1.size == 1 && c1.head.startsWith("POST /api/rooms ") && c1.head.contains(s""""eventId":"${e1.id}"""") &&
+                c1.head.contains(""""name":"設計レビュー"""") && c1.head.contains(""""start":"2026-12-03T01:00:00Z""""), c1)
+      // 題名を変えると会議室の予定の写しも変える. 説明だけなら伝えない. 付け済みなら作り直さない
+      e2   <- call(a, Method.PUT, s"/api/events/${e1.id}", Some(ev(cal.id, "設計レビュー（2回目）", e1.location, true).copy(version = Some(e1.version)).asJson))
+                .flatMap(json[EventDto])
+      c2    = calls
+      _     = assert(c2.size == 1 && c2.head.startsWith("PUT /api/rooms/room-1/event ") && c2.head.contains("設計レビュー（2回目）"), c2)
+      _    <- call(a, Method.PUT, s"/api/events/${e1.id}", Some(ev(cal.id, "設計レビュー（2回目）", e1.location, false)
+                .copy(description = "資料あり", version = Some(e2.version)).asJson)).flatMap(json[EventDto])
+      _     = assertEquals(calls, Nil)
+      // skaka でトークンが失効したら、連携が切れたと扱う
+      _     = skakaValid.set(false)
+      e3   <- call(a, Method.POST, "/api/events", Some(ev(cal.id, "失効後", "", true).asJson)).flatMap(json[EventDto])
+      _     = assert(e3.meetingError.exists(_.contains("連携が切れました")), e3)
+      s2   <- status(a)
+      _     = assert(!s2.connected)
+      // 連携し直してからやめると、skaka のトークンも失効させる
+      _    <- connectSkaka(a)
+      _     = calls
+      del  <- call(a, Method.DELETE, "/api/integrations/skaka/connection")
+      _     = assertEquals(del.status, Status.NoContent)
+      _     = assertEquals(calls, List("revoke skaka_test"))
+      s3   <- status(a)
+      _     = assert(!s3.connected)
     yield ()
   }
 

@@ -95,6 +95,13 @@ object Api {
   def setPublicLink(id: UUID, r: PublicLinkReq): Future[CalendarDto] = post[CalendarDto](s"/api/calendars/$id/public", r.asJson)
   def stopPublicLink(id: UUID): Future[Unit] = delete(s"/api/calendars/$id/public")
 
+  // ---------------------------------------------------------------- Web 会議（skaka）との連携
+
+  def skakaStatus(): Future[SkakaStatusDto] = get[SkakaStatusDto]("/api/integrations/skaka")
+  /** 連携を始める（skaka の許可の画面へ移り、終わると戻り先へ戻る）. */
+  def skakaConnectUrl(returnTo: String): String = "/api/integrations/skaka/connect?returnTo=" + enc(returnTo)
+  def disconnectSkaka(): Future[Unit] = delete("/api/integrations/skaka/connection")
+
   // ---------------------------------------------------------------- 公開リンク（ログインしない人）
 
   def publicCalendar(token: String): Future[PublicCalendarDto] = get[PublicCalendarDto](s"/api/public/${enc(token)}")

@@ -128,8 +128,9 @@ object Check:
 /** アプリのルートをまとめる（REST API・iCalendar の配信・MCP）. MCP は REST API をトークンで内部から呼ぶ. */
 object ApiRoutes:
   def apply(oidc: Option[skuaka.auth.OidcClient], users: UserStore, calendars: CalendarStore, events: EventStore, sess: SessionAuth,
-      cfg: ApiConfig): HttpRoutes[IO] =
-    val rest = new AuthRoutes(oidc, users, calendars, sess, cfg).routes <+>
+      cfg: ApiConfig, skaka: Option[SkakaService] = None): HttpRoutes[IO] =
+    val rest = new AuthRoutes(oidc, users, calendars, sess, cfg, skaka.map(_.cfg.url)).routes <+>
       new CalendarRoutes(calendars, events, users, sess, cfg).routes <+>
-      new EventRoutes(events, calendars, users, sess).routes
+      new EventRoutes(events, calendars, users, sess, skaka).routes <+>
+      new SkakaRoutes(skaka, sess, cfg).routes
     rest <+> new McpRoutes(rest, sess, cfg.publicUrl, cfg.version).routes

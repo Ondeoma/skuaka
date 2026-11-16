@@ -19,7 +19,8 @@ import skuaka.shared.ErrorDto
 
 import scala.concurrent.duration.*
 
-final case class AppConfig(port: Int, db: DbConfig, oidc: Option[OidcConfig], api: ApiConfig, staticDir: Option[String])
+final case class AppConfig(port: Int, db: DbConfig, oidc: Option[OidcConfig], api: ApiConfig, staticDir: Option[String],
+    skaka: Option[SkakaConfig], appSecret: Option[String])
 
 /** 設定は環境変数から読む. */
 object Config:
@@ -42,13 +43,26 @@ object Config:
                     Some(list("OIDC_SCOPES")).filter(_.nonEmpty).getOrElse(List("openid", "profile", "email")), list("OIDC_ALLOWED_GROUPS").toSet)))
                 case (None, None, None) if devLogin => Right(None)
                 case _ => Left("OIDC_ISSUER・OIDC_CLIENT_ID・OIDC_CLIENT_SECRET を設定してください（開発中は DEV_LOGIN=true で省略できます）")
+      // Web 会議（skaka）: 3つ揃ったときだけ. 連携のトークンを暗号化するので APP_SECRET も要る
+      skaka <- (opt("SKAKA_URL"), opt("SKAKA_CLIENT_ID"), opt("SKAKA_CLIENT_SECRET")) match
+                 case (Some(u), Some(i), Some(s)) =>
+                   val url = u.stripSuffix("/")
+                   Right(Some(SkakaConfig(url, opt("SKAKA_INTERNAL_URL").map(_.stripSuffix("/")).getOrElse(url), i, s)))
+                 case (None, None, None) => Right(None)
+                 case _ => Left("SKAKA_URL・SKAKA_CLIENT_ID・SKAKA_CLIENT_SECRET は3つとも設定してください")
+      secret <- opt("APP_SECRET") match
+                  case Some(s) if s.length < 16 => Left("APP_SECRET は16文字以上にしてください")
+                  case None if skaka.isDefined  => Left("skaka と連携するには APP_SECRET（16文字以上の秘密の値）を設定してください")
+                  case s                        => Right(s)
     yield AppConfig(
       port = int("HTTP_PORT").getOrElse(8080),
       db = DbConfig(dbUrl, dbUser, dbPass, int("DATABASE_POOL_SIZE").getOrElse(10)),
       oidc = oidc,
       api = ApiConfig(cookieSecure = pub.startsWith("https://"), publicUrl = pub, sessionTtl = int("SESSION_DAYS").getOrElse(14).days,
         devLogin = devLogin),
-      staticDir = opt("STATIC_DIR")
+      staticDir = opt("STATIC_DIR"),
+      skaka = skaka,
+      appSecret = secret
     )).left.map(new IllegalArgumentException(_))
   )
 
@@ -69,6 +83,8 @@ object Main extends IOApp.Simple:
         calendars = new CalendarStore(xa, users)
         events    = new EventStore(xa)
         sess      = new SessionAuth(users, cfg.api)
+        skaka     = (cfg.skaka, cfg.appSecret).mapN((c, k) => new SkakaService(c, http, new IntegrationStore(xa), new skuaka.auth.SecretBox(k)))
+        _ <- Resource.eval(skaka.traverse_(s => IO.println(s"[skuaka] skaka（Web 会議）: ${s.cfg.url}")))
         _ <- Resource.eval(IO.whenA(oidc.isEmpty)(IO.println("[skuaka] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")))
         // OIDC の設定の誤り（issuer の URL など）は起動時に知らせる（IdP が止まっていても起動はする）
         _ <- Resource.eval(oidc.traverse_(_.discover.attempt.flatMap {
@@ -76,7 +92,7 @@ object Main extends IOApp.Simple:
                case Left(e)  => IO.println(s"[skuaka] WARNING: OIDC の discovery に失敗しました（${e.getMessage}）。ログインのときにもう一度試します")
              }))
         _ <- purgeLoop(users).background
-        app = healthRoutes(xa) <+> ApiRoutes(oidc, users, calendars, events, sess, cfg.api)
+        app = healthRoutes(xa) <+> ApiRoutes(oidc, users, calendars, events, sess, cfg.api, skaka)
         all = cfg.staticDir.fold(app)(d => app <+> spa(d))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")

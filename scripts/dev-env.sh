@@ -10,3 +10,7 @@ else
   export DEV_LOGIN=true
   unset OIDC_ISSUER OIDC_CLIENT_ID OIDC_CLIENT_SECRET
 fi
+# 秘密の値の暗号化の鍵（開発用. 本番では十分に長い乱数にする）
+export APP_SECRET=${APP_SECRET:-skuaka-dev-app-secret-0123456789}
+# Web 会議（skaka）との連携: skaka の開発環境（画面 :5177. /oauth・/api を skaka のサーバーへ中継）に登録済みの値
+export SKAKA_URL=${SKAKA_URL:-http://localhost:5177} SKAKA_CLIENT_ID=${SKAKA_CLIENT_ID:-skuaka} SKAKA_CLIENT_SECRET=${SKAKA_CLIENT_SECRET:-skuaka-dev-secret-0123456789}

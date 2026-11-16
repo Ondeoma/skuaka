@@ -10,7 +10,7 @@ case class Props(draft: Draft)
 case class State(title: RV[String], allDay: RV[Boolean], startDate: RV[String], startTime: RV[String], endDate: RV[String], endTime: RV[String],
                  calendarId: RV[String], color: RV[String], location: RV[String], description: RV[String], repeat: RV[String],
                  cFreq: RV[String], cInterval: RV[Int], cDays: RV[Set[String]], cEnd: RV[String], cUntil: RV[String], cCount: RV[Int],
-                 attendees: RV[List[UserBrief]], reminders: RV[List[Int]])
+                 attendees: RV[List[UserBrief]], reminders: RV[List[Int]], meeting: RV[Boolean] = RV(false))
 
 /** 曜日のコード（MO〜SU）. */
 def code(d: String): String = Recurrence.Days((Cal.dow(d) + 6) % 7)
@@ -112,13 +112,23 @@ def addGuest(s: State, u: UserBrief): Unit = if (!s.attendees.v.exists(_.id == u
 def removeGuest(s: State, u: UserBrief): Unit = s.attendees := s.attendees.v.filterNot(_.id == u.id)
 def exclude(s: State) = s.attendees.mapC(as => as.map(_.id) ++ Store.me.v.map(_.id).toList)
 
+// ---------------------------------------------------------------- Web 会議（skaka）
+
+/** skaka との連携が設定されているか（されていなければ何も出さない）. */
+def hasSkaka = Store.skaka.mapC(_.isDefined)
+def attached(s: State) = s.location.mapC(Store.meetingUrl(_).isDefined)
+/** 付けられる（連携していて、まだ付けていない）. */
+def canAttach(s: State) = computed(Store.skaka.v.exists(_.connected) && Store.meetingUrl(s.location.v).isEmpty)
+def needConnect(s: State) = computed(Store.skaka.v.exists(!_.connected) && Store.meetingUrl(s.location.v).isEmpty)
+def connectUrl: String = Api.skakaConnectUrl("/settings")
+
 def heading(props: Props): String = if (props.draft.id.isEmpty) "予定を作成" else "予定を編集"
 
 def draft(s: State, props: Props): Draft = props.draft.copy(
   title = s.title.v.trim, allDay = s.allDay.v, startDate = s.startDate.v, startTime = s.startTime.v, endDate = s.endDate.v,
   endTime = s.endTime.v, calendarId = UUID.fromString(s.calendarId.v), color = Option(s.color.v).filter(_.nonEmpty),
   location = s.location.v.trim, description = s.description.v, recurrence = recurrence(s), attendees = s.attendees.v,
-  reminders = Reminders.normalize(s.reminders.v))
+  reminders = Reminders.normalize(s.reminders.v), withMeeting = s.meeting.v && Store.meetingUrl(s.location.v).isEmpty)
 
 def save(s: State, props: Props): Unit = {
   val d = draft(s, props)
@@ -187,6 +197,11 @@ def close(): Unit = Store.editor := None
       <div class="grid2">
         <div>
           <label class="field"><span>場所</span><input type="text" v-model="s.location" placeholder="場所を追加"></label>
+          <div v-if="hasSkaka" class="meeting small">
+            <span v-if="attached(s)">🎥 Web 会議（skaka）を付けてあります</span>
+            <label v-if="canAttach(s)" class="row"><input type="checkbox" v-model="s.meeting"> 🎥 Web 会議（skaka）を付ける</label>
+            <span v-if="needConnect(s)" class="muted">🎥 設定の画面で skaka と連携すると、Web 会議を付けられます</span>
+          </div>
           <label class="field"><span>説明</span><textarea v-model="s.description" rows="5" placeholder="説明を追加"></textarea></label>
           <div class="field"><span>通知</span>
             <div v-for="r in reminderRows(s)" :key="r._2" class="rem">
@@ -224,6 +239,8 @@ def close(): Unit = Store.editor := None
 
 <style scoped>
 .hd h2 { margin: 0; }
+.meeting { margin: -.4rem 0 .8rem; }
+.meeting label { gap: .4rem; }
 .rem { display: flex; align-items: center; gap: .3rem; margin-bottom: .3rem; }
 .rem select { flex: 1; }
 .add-rem { align-self: flex-start; }

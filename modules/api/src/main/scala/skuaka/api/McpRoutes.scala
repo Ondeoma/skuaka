@@ -42,7 +42,7 @@ object ApiCatalog:
     Endpoint("GET", "/api/events?from=yyyy-MM-dd&to=yyyy-MM-dd&tz=", "期間の予定（繰り返しは1回ずつに展開。to は含まない。400日まで）"),
     Endpoint("GET", "/api/events/search?q=", "予定を探す（タイトル・場所・説明）"),
     Endpoint("GET", "/api/events/{eventId}", "予定の詳細（繰り返しの定義・ゲスト・version）"),
-    Endpoint("POST", "/api/events", "予定を作る {calendarId, title, description, location, allDay, start, end, timezone, color?, recurrence?, attendees: [userId], reminders: [何分前]}"),
+    Endpoint("POST", "/api/events", "予定を作る {calendarId, title, description, location, allDay, start, end, timezone, color?, recurrence?, attendees: [userId], reminders: [何分前], withMeeting?: true で Web 会議（skaka）の会議室を付ける}"),
     Endpoint("PUT", "/api/events/{eventId}?scope=this|following|all&occurrence=", "予定を変える（本文は作成と同じ + version。繰り返しは scope と occurrence を付ける）"),
     Endpoint("DELETE", "/api/events/{eventId}?scope=this|following|all&occurrence=", "予定を削除する"),
     Endpoint("POST", "/api/events/{eventId}/rsvp", "招待に返事をする {response: accepted|declined|tentative}"),
@@ -184,7 +184,8 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     "recurrence" -> str("繰り返し（RRULE. 例 FREQ=WEEKLY;BYDAY=MO,WE、FREQ=MONTHLY;BYDAY=-1FR;COUNT=6）. none で繰り返しをやめる"),
     "reminders" -> Json.obj("type" -> "array".asJson, "items" -> Json.obj("type" -> "integer".asJson),
       "description" -> "通知（何分前の一覧. 例 [10, 1440]. [] で通知しない. 5つまで）. 置き換え".asJson),
-    "color" -> str("予定の色 #rrggbb（空文字で既定の色）")
+    "color" -> str("予定の色 #rrggbb（空文字で既定の色）"),
+    "withMeeting" -> bool("Web 会議（skaka）の会議室を作り、場所に URL を入れる（skaka と連携しているときだけ. 付け済みなら何もしない）")
   )
 
   /** 予定の入力を、元（変更なら今の予定）に重ねて EventReq にする. */
@@ -243,7 +244,7 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     lift(span).andThen(sp => lift(recurrence).andThen(rec => cal.andThen(cid => attendees.mapR { as =>
       EventReq(cid, opt(a, "title").orElse(cur.map(_.title)).getOrElse(""), opt(a, "description").orElse(cur.map(_.description)).getOrElse(""),
         opt(a, "location").orElse(cur.map(_.location)).getOrElse(""), allDay, sp.startText, sp.endText,
-        cur.filter(_ => start.isEmpty).map(_.timezone).getOrElse(c.zone.getId), color, rec, as, reminders, cur.map(_.version))
+        cur.filter(_ => start.isEmpty).map(_.timezone).getOrElse(c.zone.getId), color, rec, as, reminders, cur.map(_.version), a.get[Boolean]("withMeeting").toOption)
     })))
 
   private def scopeQuery(u: Uri, a: ACursor): Uri =
@@ -286,6 +287,10 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
       Option.when(e.description.nonEmpty)(s"\n${e.description}"),
       Some(s"\neventId=${e.id} version=${e.version} タイムゾーン=${e.timezone}")
     ).flatten.mkString("\n")
+
+  /** 場所（Web 会議の URL を含む）と、会議室を作れなかった理由. */
+  private def meetingText(e: EventDto): String =
+    Option.when(e.location.nonEmpty)(s"\n場所: ${e.location}").getOrElse("") + e.meetingError.fold("")(m => s"\n※ $m（予定は保存しました）")
 
   private def calNames(c: Ctx): IO[Map[UUID, String]] = calendars(c).map(_.getOrElse(Nil).map(x => x.id -> x.name).toMap)
 
@@ -364,7 +369,7 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     Tool("create_event", "予定を作る. ゲストを入れると招待される.", schema(List("title", "start"), eventProps*), readOnly = false) { (c, a) =>
       eventReq(c, a, None).andThen(r =>
         c.call.as[EventDto](Method.POST, path("api", "events"), Some(r.asJson))
-          .mapR(e => s"予定を作りました: ${e.title} ${whenText(e.allDay, e.start, e.end, c.zone)}\neventId=${e.id}\n$base/"))
+          .mapR(e => s"予定を作りました: ${e.title} ${whenText(e.allDay, e.start, e.end, c.zone)}${meetingText(e)}\neventId=${e.id}\n$base/"))
     },
     Tool("update_event", "予定を変える（指定した項目だけ）. 繰り返しの予定は occurrence と scope で範囲を選ぶ.",
       schema(List("eventId"), (("eventId" -> str("予定の ID")) :: occurrenceProps ++ eventProps)*), readOnly = false) { (c, a) =>
@@ -375,7 +380,7 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
           eventReq(c, if thisOnly then a.withFocus(_.mapObject(_.remove("recurrence"))) else a, Some(cur -> occ)).andThen { r =>
             val req = if thisOnly then r.copy(recurrence = None) else r
             c.call.as[EventDto](Method.PUT, scopeQuery(path("api", "events", id.toString), a), Some(req.asJson))
-              .mapR(e => s"予定を変えました: ${e.title} ${whenText(e.allDay, e.start, e.end, c.zone)}\neventId=${e.id}")
+              .mapR(e => s"予定を変えました: ${e.title} ${whenText(e.allDay, e.start, e.end, c.zone)}${meetingText(e)}\neventId=${e.id}")
           }
         })
     },

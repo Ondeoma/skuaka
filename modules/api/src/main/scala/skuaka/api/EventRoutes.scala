@@ -18,7 +18,8 @@ final case class EventInput(calendarId: UUID, title: String, description: String
     color: Option[String], recurrence: Option[Recurrence], attendees: List[UUID], reminders: List[Int], version: Option[Int])
 
 /** 予定の一覧（繰り返しの展開）・作成・変更・削除・招待への返事・検索. */
-final class EventRoutes(events: EventStore, calendars: CalendarStore, users: UserStore, val sessions: SessionAuth) extends RouteSupport:
+final class EventRoutes(events: EventStore, calendars: CalendarStore, users: UserStore, val sessions: SessionAuth, skaka: Option[SkakaService] = None)
+    extends RouteSupport:
 
   private def canEdit(role: Option[String]): Boolean = role.exists(r => CalRole.rank(r) >= CalRole.rank(CalRole.Edit))
 
@@ -57,11 +58,41 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
   /** 公開リンクで見る予定（権限は公開の範囲. ゲストは返さない）. */
   private def asPublic(c: PublicCalendarDto, r: EventRow): VisibleEvent = VisibleEvent.of(r, Some(c.access), None, 0)
 
-  private def respondEvent(u: User, id: UUID): IO[Response[IO]] =
+  private def respondEvent(u: User, id: UUID, meetingError: Option[String] = None): IO[Response[IO]] =
     events.visibleOne(u.id, id).flatMap {
-      case Some(v) => eventDto(v).flatMap(Ok(_))
+      case Some(v) => eventDto(v).flatMap(e => Ok(e.copy(meetingError = meetingError)))
       case None    => NoContent()
     }
+
+  // ---------------------------------------------------------------- Web 会議（skaka）
+
+  /** 予定の場所にある会議室のコード. */
+  private def meetingCode(r: EventRow): Option[String] = skaka.flatMap(s => Meeting.find(r.location, s.cfg.url).map(_._2))
+
+  private def skakaEvent(r: EventRow): SkakaEvent = SkakaEvent(r.id, r.title, r.span.startText, r.span.endText, r.allDay)
+
+  /** 頼まれていれば、会議室を作って場所に URL を入れる（付け済みなら何もしない）. 失敗したら理由（予定は保存したまま）. */
+  private def attachMeeting(u: User, id: UUID, wanted: Option[Boolean]): IO[Option[String]] =
+    if !wanted.contains(true) then IO.pure(None)
+    else skaka match
+      case None => IO.pure(Some("Web 会議（skaka）との連携は設定されていません"))
+      case Some(s) =>
+        events.get(id).flatMap {
+          case Some(r) if meetingCode(r).isEmpty =>
+            s.createRoom(u.id, skakaEvent(r)).flatMap {
+              case Left(e)    => IO.pure(Some(s"会議室を作れませんでした（$e）"))
+              case Right(url) => events.update(r.copy(location = Meeting.append(r.location, url)), None, None).as(None)
+            }
+          case _ => IO.pure(None)
+        }
+
+  /** タイトル・日時が変わったら、会議室に結び付けた予定の写しを変える（失敗しても保存は止めない）. */
+  private def syncMeeting(u: User, before: EventRow): IO[Unit] =
+    skaka.traverse_ { s =>
+      events.get(before.id).flatMap(_.traverse_ { r =>
+        meetingCode(r).traverse_(code => IO.whenA(r.title != before.title || r.span != before.span)(s.updateEvent(u.id, code, skakaEvent(r)).void))
+      })
+    }.handleError(_ => ())
 
   private def check(r: EventReq): Either[String, EventInput] =
     for
@@ -178,7 +209,8 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
         body[EventReq](req)(r => valid(check(r)) { in =>
           writable(u, in.calendarId) {
             val id = UUID.randomUUID()
-            events.create(row(id, Some(u.id), in, Nil, 1), in.attendees.filterNot(_ == u.id)) *> respondEvent(u, id).map(_.withStatus(Status.Created))
+            events.create(row(id, Some(u.id), in, Nil, 1), in.attendees.filterNot(_ == u.id)) *>
+              attachMeeting(u, id, r.withMeeting).flatMap(me => respondEvent(u, id, me).map(_.withStatus(Status.Created)))
           }
         })
       }
@@ -196,7 +228,8 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
                   // 切った回から新しい予定にする（「この予定」は1回だけ）
                   val newId = UUID.randomUUID()
                   val next  = if param(req, "scope").contains(EditScope.This) then in.copy(recurrence = None) else in
-                  events.split(rest, row(newId, m.organizerId, next, Nil, 1), guests) *> respondEvent(u, newId)
+                  events.split(rest, row(newId, m.organizerId, next, Nil, 1), guests) *>
+                    attachMeeting(u, newId, r.withMeeting).flatMap(respondEvent(u, newId, _))
                 case None =>
                   val span = (m.recurrence, param(req, "occurrence"), in.recurrence) match
                     case (Some(_), Some(k), Some(_)) => rebase(m, k, in)
@@ -205,7 +238,7 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
                   // 開始や繰り返しが変わったら、除いた回は意味がなくなるので捨てる
                   val keep = if span.key == m.span.key && in.recurrence.map(_.toRrule) == m.rrule then m.exdates else Nil
                   events.update(row(m.id, m.organizerId, next, keep, m.version), Some(guests), in.version).ifM(
-                    respondEvent(u, m.id),
+                    syncMeeting(u, m) *> attachMeeting(u, m.id, r.withMeeting).flatMap(respondEvent(u, m.id, _)),
                     err(Status.Conflict, "ほかの人がこの予定を変更しました。開き直してください"))
             }
           }

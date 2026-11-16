@@ -20,6 +20,8 @@ skuaka は、チームで予定を管理・共有するためのカレンダー�
 - **リンクで公開（ログインしない人にも）**: カレンダーごとに秘密のリンクを発行し、リンクを知っている人はログインせずに閲覧のページ（`/p/…`）で見られる（日・週・月・スケジュール。閲覧だけ）。
   同じ値の iCalendar の URL（`/ics/….ics`）で、iCalendar の購読に対応したカレンダーアプリから購読もできる。
   公開の範囲は「予定あり・なしのみ」か「予定の詳細」。ゲストの一覧と主催者は出さない。作り直すと前のリンクは使えなくなる
+- **Web 会議（skaka）**: 設定の画面で skaka と連携すると（OAuth 2.0 の認可コード + PKCE）、予定の編集画面で「Web 会議（skaka）を付ける」を選べる。
+  保存すると skaka に会議室を作り、場所に会議室の URL を入れる（予定の詳細に「Web 会議に参加」）。題名・日時を変えると会議室にも伝える
 - **検索**（タイトル・場所・説明）、キーボードの操作（`t` 今日・`j`/`k` 前後・`d`/`w`/`m`/`a` 表示・`c` 作成・`/` 検索・`?` 一覧）
 - **API トークン**: 設定の画面で作成・失効（読み書き / 参照のみ、有効期限）。`Authorization: Bearer skuaka_…` で画面と同じ REST API を呼べる
   （一覧は `GET /api/endpoints`）
@@ -91,6 +93,9 @@ Docker: `scripts/dist.sh` のあと `docker build -f deploy/docker/app.Dockerfil
 | `SESSION_DAYS` | ログインの有効日数（既定 14） |
 | `HTTP_PORT` | 待ち受けるポート（既定 8080） |
 | `STATIC_DIR` | ビルド済みの画面（`dist/static`） |
+| `APP_SECRET` | 秘密の値（連携のトークン）を暗号化する鍵（16文字以上. skaka と連携するときは必須） |
+| `SKAKA_URL` / `SKAKA_CLIENT_ID` / `SKAKA_CLIENT_SECRET` | Web 会議（skaka）との連携（3つとも設定したときだけ）。skaka には Redirect URI `${PUBLIC_URL}/api/integrations/skaka/callback` を登録する |
+| `SKAKA_INTERNAL_URL` | サーバーから skaka を呼ぶ URL（省けば `SKAKA_URL`） |
 | `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定しない場合のみ。本番では使わない） |
 
 ### OIDC の IdP の設定

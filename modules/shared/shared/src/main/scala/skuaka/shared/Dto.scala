@@ -10,7 +10,25 @@ import java.util.UUID
 
 final case class ErrorDto(error: String) derives Encoder.AsObject, Decoder
 
-final case class ClientConfigDto(devLogin: Boolean, oidc: Boolean, version: String) derives Encoder.AsObject, Decoder
+/** skakaUrl は Web 会議（skaka）と連携できるときの skaka の URL. */
+final case class ClientConfigDto(devLogin: Boolean, oidc: Boolean, version: String, skakaUrl: Option[String]) derives Encoder.AsObject, Decoder
+
+/** 自分が skaka（Web 会議）と連携しているか. */
+final case class SkakaStatusDto(enabled: Boolean, connected: Boolean, url: Option[String]) derives Encoder.AsObject, Decoder
+
+/**
+ * 予定の場所に入れる Web 会議（skaka）の会議室の URL（{skaka の URL}/r/{コード}）.
+ * 場所が空なら URL だけ、あれば「{場所} / {URL}」（skaka が予定に会議室を付けるときと同じ書き方）.
+ */
+object Meeting {
+  private def pattern(base: String) = (java.util.regex.Pattern.quote(base.stripSuffix("/") + "/r/") + "([a-z0-9-]+)").r
+
+  /** 場所の中の会議室の URL とコード. */
+  def find(location: String, base: String): Option[(String, String)] =
+    pattern(base).findFirstMatchIn(location).map(m => (m.matched, m.group(1)))
+
+  def append(location: String, url: String): String = if (location.trim.isEmpty) url else s"${location.trim} / $url"
+}
 
 final case class UserBrief(id: UUID, name: String, email: Option[String], avatarUrl: Option[String]) derives Encoder.AsObject, Decoder
 
@@ -158,17 +176,19 @@ object Reminders {
 
 /**
  * 予定の作成・変更. start / end は終日なら日付、そうでなければ UTC の日時. timezone は繰り返しを展開する基準のタイムゾーン.
- * reminders は通知（何分前の一覧. 空なら通知しない）.
+ * reminders は通知（何分前の一覧. 空なら通知しない）. withMeeting なら、保存したあとで Web 会議（skaka）の会議室を作り、場所に URL を入れる.
  */
 final case class EventReq(calendarId: UUID, title: String, description: String, location: String, allDay: Boolean,
                           start: String, end: String, timezone: String, color: Option[String], recurrence: Option[Recurrence],
-                          attendees: List[UUID], reminders: List[Int], version: Option[Int]) derives Encoder.AsObject, Decoder
+                          attendees: List[UUID], reminders: List[Int], version: Option[Int], withMeeting: Option[Boolean] = None)
+    derives Encoder.AsObject, Decoder
 
-/** 予定（繰り返しの元の定義）. */
+/** 予定（繰り返しの元の定義）. meetingError は、Web 会議の会議室を作れなかったとき（予定は保存してある）. */
 final case class EventDto(id: UUID, calendarId: UUID, title: String, description: String, location: String, allDay: Boolean,
                           start: String, end: String, timezone: String, color: Option[String], recurrence: Option[Recurrence],
                           attendees: List[AttendeeDto], reminders: List[Int], organizer: UserBrief, canEdit: Boolean,
-                          myResponse: Option[String], version: Int, busy: Boolean = false) derives Encoder.AsObject, Decoder
+                          myResponse: Option[String], version: Int, busy: Boolean = false, meetingError: Option[String] = None)
+    derives Encoder.AsObject, Decoder
 
 /**
  * 画面に並べる1回分の予定（繰り返しを展開したもの）.

@@ -16,13 +16,13 @@ final case class Toast(id: Int, text: String, error: Boolean)
 final case class Draft(id: Option[UUID], occurrence: Option[String], wasRecurring: Boolean, calendarId: UUID, title: String,
                        description: String, location: String, allDay: Boolean, startDate: String, startTime: String, endDate: String,
                        endTime: String, timezone: String, color: Option[String], recurrence: Option[Recurrence], attendees: List[UserBrief],
-                       reminders: List[Int], version: Option[Int]) {
+                       reminders: List[Int], version: Option[Int], withMeeting: Boolean = false) {
 
   def toReq: EventReq = {
     val (s, e) =
       if (allDay) (startDate, if (endDate < startDate) startDate else endDate)
       else (Cal.instant(startDate, Cal.parseHm(startTime)), Cal.instant(endDate, Cal.parseHm(endTime)))
-    EventReq(calendarId, title, description, location, allDay, s, e, timezone, color, recurrence, attendees.map(_.id), reminders, version)
+    EventReq(calendarId, title, description, location, allDay, s, e, timezone, color, recurrence, attendees.map(_.id), reminders, version, Option.when(withMeeting)(true))
   }
 }
 
@@ -30,6 +30,8 @@ final case class Draft(id: Option[UUID], occurrence: Option[String], wasRecurrin
 object Store {
 
   val me: RV[Option[MeDto]] = RV(None)
+  /** Web 会議（skaka）と連携しているか（設定されていなければ None）. */
+  val skaka: RV[Option[SkakaStatusDto]] = RV(None)
   /** 公開リンクで見ているとき（ログインしない人. 閲覧だけ）: 秘密の値とカレンダー. */
   val guest: RV[Option[(String, PublicCalendarDto)]] = RV(None)
   val config: RV[Option[ClientConfigDto]] = RV(None)
@@ -170,6 +172,11 @@ object Store {
 
   def loadCalendars(): Future[Unit] = Api.calendars().map(cs => calendars := cs)
 
+  def loadSkaka(): Future[Unit] = Api.skakaStatus().map(st => skaka := Option.when(st.enabled)(st))
+
+  /** 場所にある Web 会議（skaka）の会議室の URL. */
+  def meetingUrl(location: String): Option[String] = config.v.flatMap(_.skakaUrl).flatMap(Meeting.find(location, _)).map(_._1)
+
   /** 公開リンクで開く（カレンダーは公開されたものだけ. 色・名前の表示に使う）. */
   def openGuest(token: String): Future[Unit] = Api.publicCalendar(token).map { c =>
     guest := Some(token -> c)
@@ -281,9 +288,10 @@ object Store {
   /** 編集中の予定を保存する. */
   def save(d: Draft)(done: => Unit): Unit =
     askScope(d.wasRecurring, "変更") { scope =>
-      report(saveDraft(d, scope)) { _ =>
+      report(saveDraft(d, scope)) { e =>
         editor := None
-        toast(if (d.id.isEmpty) "予定を作成しました" else "予定を変更しました")
+        // 会議室を作れなくても、予定は保存してある
+        e.meetingError.fold(toast(if (d.id.isEmpty) "予定を作成しました" else "予定を変更しました"))(m => toast(s"予定を保存しました。$m", error = true))
         done
         changed()
       }
@@ -329,6 +337,7 @@ object Store {
     dom.document.addEventListener("visibilitychange", (_: dom.Event) => if (dom.document.visibilityState.toString == "visible") load())
     reminders.start()
     Keys.install()
+    loadSkaka().failed.foreach(_ => ())
   }
 
   // ---------------------------------------------------------------- 通知（予定の前に知らせる）
