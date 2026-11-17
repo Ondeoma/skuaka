@@ -98,7 +98,8 @@ trait RouteSupport extends Http4sDsl[IO]:
     if !bearer && !readOnly(req) && req.headers.get(csrfHeader).isEmpty then err(Status.Forbidden, "画面以外からの更新の要求は受け付けません")
     else
       sessions.fromRequest(req).flatMap {
-        case Some(p) => f(p)
+        // 操作したユーザーを、トレース（スパンの属性）とこの中のログに載せる
+        case Some(p) => skuaka.observe.Telemetry.withUser(p.user.id.toString, p.user.name)(f(p))
         case None if bearer =>
           err(Status.Unauthorized, "API トークンが正しくないか、期限が切れています").map(_.putHeaders(`WWW-Authenticate`(Challenge("Bearer", "skuaka"))))
         case None => err(Status.Unauthorized, "ログインしてください")
@@ -145,14 +146,16 @@ object SecurityHeaders:
       withCsp.putHeaders(fixed*)
     }
 
-/** アプリのルートをまとめる（REST API・iCalendar の配信・MCP）. MCP は REST API をトークンで内部から呼ぶ. */
+/** アプリのルートをまとめる（REST API・iCalendar の配信・MCP・プッシュ通知の購読）. MCP は REST API をトークンで内部から呼ぶ. */
 object ApiRoutes:
   def apply(oidc: Option[skuaka.auth.OidcClient], users: UserStore, calendars: CalendarStore, events: EventStore, sess: SessionAuth,
-      cfg: ApiConfig, skaka: Option[SkakaService] = None): HttpRoutes[IO] =
+      cfg: ApiConfig, skaka: Option[SkakaService] = None, push: Option[(skuaka.push.PushStore, skuaka.push.PushService)] = None,
+      notifier: Option[EventNotifier] = None): HttpRoutes[IO] =
     val rest = new AuthRoutes(oidc, users, calendars, sess, cfg, skaka.map(_.cfg.url)).routes <+>
       new CalendarRoutes(calendars, events, users, sess, cfg).routes <+>
-      new EventRoutes(events, calendars, users, sess, skaka).routes <+>
-      new SkakaRoutes(skaka, sess, cfg).routes
+      new EventRoutes(events, calendars, users, sess, skaka, notifier).routes <+>
+      new SkakaRoutes(skaka, sess, cfg).routes <+>
+      push.fold(HttpRoutes.empty[IO])((store, service) => new PushRoutes(store, service, sess).routes)
     // 本文は MaxBody まで（大きな本文でメモリを使い切らせない. アイコンの 1MB より大きくしておく）.
     // Content-Length が超えていれば、EntityLimiter はルートに入る前に例外にするので、ここで 413 にする
     val limited = EntityLimiter.httpRoutes(rest <+> new McpRoutes(rest, sess, cfg.publicUrl, cfg.version).routes, MaxBody)

@@ -22,6 +22,7 @@ val routes: PathPatternRoutes = List(
 )
 
 def mounted(s: State): Unit = {
+  Fallback.install(routes)
   Api.clientConfig().foreach(c => Store.config := Some(c))
   val path = dom.window.location.pathname
   if (path.startsWith("/login")) s.ready := true
@@ -32,6 +33,7 @@ def mounted(s: State): Unit = {
   }
   else Store.report(Api.me()) { me =>
     Store.me := Some(me)
+    Observe.setUser(me.id.toString)
     Store.report(Store.loadCalendars()) { _ =>
       Store.start()
       Store.load()
@@ -86,6 +88,7 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
     </select>
     <div v-if="loggedIn" class="me">
       <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="30" /></button>
+      <div v-if="s.menu" class="menu-bg" @click="s.menu := false"></div>
       <div v-if="s.menu" class="menu" @click="s.menu := false">
         <div class="who"><b>{{ userName }}</b><span class="muted small">{{ userEmail }}</span></div>
         <RouterLink to="/settings">設定</RouterLink>
@@ -140,9 +143,8 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
 .me { position: relative; }
 .me-btn { padding: .15rem; border-radius: 999px; }
 .menu { position: absolute; right: 0; top: 2.8rem; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
-  min-width: 220px; padding: .3rem; display: flex; flex-direction: column; }
-.menu a { padding: .5rem .7rem; border-radius: 6px; color: var(--fg); }
-.menu a:hover { background: var(--hover); text-decoration: none; }
+  min-width: 220px; padding: .3rem; display: flex; flex-direction: column; z-index: 200; }
+.menu-bg { position: fixed; inset: 0; z-index: 199; }
 .who { display: flex; flex-direction: column; padding: .5rem .7rem; border-bottom: 1px solid var(--line); margin-bottom: .3rem; }
 .progress { position: absolute; left: 0; bottom: -1px; height: 2px; width: 0; background: var(--accent); opacity: 0; transition: opacity .2s; }
 .progress.on { width: 100%; opacity: .7; animation: prog 1.2s ease-in-out infinite; }

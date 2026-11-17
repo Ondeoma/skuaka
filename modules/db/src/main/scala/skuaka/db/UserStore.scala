@@ -31,7 +31,7 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
   def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] = tx(
     (fr"""insert into app_user (id, sub, name, email, avatar_url, last_login_at) values (${UUID.randomUUID()}, $sub, $name, $email, $avatar, now())
           on conflict (sub) do update set name = excluded.name, email = excluded.email,
-            avatar_url = coalesce(excluded.avatar_url, app_user.avatar_url), last_login_at = now()
+            avatar_url = excluded.avatar_url, last_login_at = now()
           returning""" ++ cols).query[User].unique
   )
 

@@ -15,6 +15,9 @@ object Main {
     ScalactiveConfig.titleTemplate = "%s | skuaka"
     ScalactiveConfig.defaultTitle = Some("skuaka")
     Theme.apply()
+    // skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）
+    Observe.start()
+    Pwa.register()
     App()(dom.document.body, AddMethod.appendS(IdSelector("app"))).init()
   }
 

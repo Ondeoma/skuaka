@@ -55,6 +55,7 @@ object Api {
   def put[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PUT, url, Some(body)).map(as[A])
   def patch[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PATCH, url, Some(body)).map(as[A])
   def delete(url: String): Future[Unit] = request(dom.HttpMethod.DELETE, url).map(_ => ())
+  def delete(url: String, body: Json): Future[Unit] = request(dom.HttpMethod.DELETE, url, Some(body)).map(_ => ())
 
   def enc(s: String): String = js.URIUtils.encodeURIComponent(s)
 
@@ -101,6 +102,14 @@ object Api {
   /** 連携を始める（skaka の許可の画面へ移り、終わると戻り先へ戻る）. */
   def skakaConnectUrl(returnTo: String): String = "/api/integrations/skaka/connect?returnTo=" + enc(returnTo)
   def disconnectSkaka(): Future[Unit] = delete("/api/integrations/skaka/connection")
+
+  // ---------------------------------------------------------------- プッシュ通知（PWA）
+
+  /** VAPID の公開鍵. */
+  def pushPublicKey(): Future[String] = get[Json]("/api/push").map(_.hcursor.get[String]("publicKey").getOrElse(""))
+  /** この端末で受け取る（PushSubscription.toJSON() の形）・やめる. */
+  def pushSubscribe(subscription: Json): Future[Unit] = post[Json]("/api/push/subscriptions", subscription).map(_ => ())
+  def pushUnsubscribe(endpoint: String): Future[Unit] = delete("/api/push/subscriptions", Json.obj("endpoint" -> endpoint.asJson))
 
   // ---------------------------------------------------------------- 公開リンク（ログインしない人）
 

@@ -15,6 +15,8 @@ import org.http4s.server.staticcontent.*
 import skuaka.api.*
 import skuaka.auth.{OidcClient, OidcConfig}
 import skuaka.db.*
+import skuaka.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, Telemetry}
+import skuaka.push.{PushService, PushStore}
 import skuaka.shared.ErrorDto
 
 import scala.concurrent.duration.*
@@ -76,40 +78,55 @@ object Config:
 
 object Main extends IOApp.Simple:
 
+  // ログにトレースの ID・操作したユーザーを載せるため、IOLocal の文脈を Java のライブラリから見えるようにする
+  // （IORuntime を作る前に設定する必要がある. オブジェクトの初期化は main より先に動く）
+  Telemetry.prepare()
+
+  private val version = Option(getClass.getPackage.getImplementationVersion).orElse(sys.env.get("APP_VERSION")).getOrElse("dev")
+
   private given org.typelevel.log4cats.LoggerFactory[IO] = org.typelevel.log4cats.slf4j.Slf4jFactory.create[IO]
 
   def run: IO[Unit] =
     for
       cfg <- Config.load
       n   <- migrateWithRetry(cfg)
-      _   <- IO.println(s"[skuaka] database migrated ($n migration(s) applied)")
+      _   <- skuaka.observe.Log.println(s"[skuaka] database migrated ($n migration(s) applied)")
       _ <- (for
+        _    <- Telemetry.resource("skuaka", version, runtime)
         xa   <- Database.transactor(cfg.db)
-        http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
+        _    <- gauges(xa)
+        // 外への呼び出し（IdP・skaka・プッシュのサービス）もトレースに出す（traceparent を付けて送る）
+        http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(HttpClientTelemetry(_))
         oidc <- Resource.eval(cfg.oidc.traverse(OidcClient.create(_, http)))
         users     = new UserStore(xa)
         calendars = new CalendarStore(xa, users)
         events    = new EventStore(xa)
         sess      = new SessionAuth(users, cfg.api)
         skaka     = (cfg.skaka, cfg.appSecret).mapN((c, k) => new SkakaService(c, http, new IntegrationStore(xa), new skuaka.auth.SecretBox(k)))
-        _ <- Resource.eval(skaka.traverse_(s => IO.println(s"[skuaka] skaka（Web 会議）: ${s.cfg.url}")))
-        _ <- Resource.eval(IO.whenA(oidc.isEmpty)(IO.println("[skuaka] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")))
+        _ <- Resource.eval(skaka.traverse_(s => skuaka.observe.Log.println(s"[skuaka] skaka（Web 会議）: ${s.cfg.url}")))
+        _ <- Resource.eval(IO.whenA(oidc.isEmpty)(skuaka.observe.Log.println("[skuaka] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")))
         // OIDC の設定の誤り（issuer の URL など）は起動時に知らせる（IdP が止まっていても起動はする）
         _ <- Resource.eval(oidc.traverse_(_.discover.attempt.flatMap {
-               case Right(m) => IO.println(s"[skuaka] OIDC: ${m.issuer}")
-               case Left(e)  => IO.println(s"[skuaka] WARNING: OIDC の discovery に失敗しました（${e.getMessage}）。ログインのときにもう一度試します")
+               case Right(m) => skuaka.observe.Log.println(s"[skuaka] OIDC: ${m.issuer}")
+               case Left(e)  => skuaka.observe.Log.println(s"[skuaka] WARNING: OIDC の discovery に失敗しました（${e.getMessage}）。ログインのときにもう一度試します")
              }))
-        _ <- purgeLoop(users).background
+        // プッシュ通知（PWA）: 招待と、予定のリマインダー（何分前のお知らせ）
+        pushStore = new PushStore(xa)
+        push     <- Resource.eval(PushService.create(pushStore, http, cfg.api.publicUrl, "skuaka"))
+        notifier  = new EventNotifier(events, users, push)
+        _ <- purgeLoop(users, events).background
+        _ <- notifier.reminderLoop.background
         web <- Resource.eval(cfg.staticDir.traverse(spa))
-        all = ApiRoutes(oidc, users, calendars, events, sess, cfg.api, skaka) <+>
-                SecurityHeaders(healthRoutes(xa) <+> web.getOrElse(HttpRoutes.empty[IO]), cfg.api.cookieSecure)
+        all = ApiRoutes(oidc, users, calendars, events, sess, cfg.api, skaka, Some(pushStore -> push), Some(notifier)) <+>
+                SecurityHeaders(healthRoutes(xa) <+> RumRoutes.routes <+> web.getOrElse(HttpRoutes.empty[IO]), cfg.api.cookieSecure)
+        httpApp <- HttpTelemetry(ErrorHandling.Custom.recoverWith(all.orNotFound)(handler), List("/api", "/auth", "/ics", "/mcp"))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")
                .withPort(Port.fromInt(cfg.port).getOrElse(port"8080"))
                .withShutdownTimeout(5.seconds)
-               .withHttpApp(ErrorHandling.Custom.recoverWith(all.orNotFound)(handler))
+               .withHttpApp(httpApp)
                .build
-        _ <- Resource.eval(IO.println(s"[skuaka] listening on :${cfg.port} (${cfg.api.publicUrl})"))
+        _ <- Resource.eval(skuaka.observe.Log.println(s"[skuaka] listening on :${cfg.port} (${cfg.api.publicUrl})"))
       yield ()).useForever
     yield ()
 
@@ -117,7 +134,7 @@ object Main extends IOApp.Simple:
   private def migrateWithRetry(cfg: AppConfig, attempt: Int = 1): IO[Int] =
     Database.migrate(cfg.db).handleErrorWith { e =>
       if attempt >= 60 then IO.raiseError(e)
-      else IO.println(s"[skuaka] database not ready (${e.getMessage.take(120)}); retry $attempt/60") *> IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
+      else skuaka.observe.Log.println(s"[skuaka] database not ready (${e.getMessage.take(120)}); retry $attempt/60") *> IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
     }
 
   private def healthRoutes(xa: doobie.Transactor[IO]): HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -129,24 +146,46 @@ object Main extends IOApp.Simple:
   }
 
   private val handler: PartialFunction[Throwable, IO[Response[IO]]] = { case e =>
-    IO.println(s"[skuaka] unhandled error: $e") *> InternalServerError(ErrorDto("サーバーでエラーが発生しました"))
+    IO(org.slf4j.LoggerFactory.getLogger("skuaka").error("unhandled error", e)) *> InternalServerError(ErrorDto("サーバーでエラーが発生しました"))
   }
 
-  /** 期限の切れたセッション・ログイン途中の状態を消す（1時間ごと）. */
-  private def purgeLoop(users: UserStore): IO[Unit] =
-    (IO.sleep(1.minute) *> (IO.realTimeInstant.flatMap(users.purgeExpired).handleErrorWith(e => IO.println(s"[skuaka] purge failed: $e")) *>
-      IO.sleep(1.hour)).foreverM).void
+  /** DB から定期的に読むメトリクス（skorimako のダッシュボード・アラート用）. */
+  private def gauges(xa: doobie.Transactor[IO]): Resource[IO, Unit] =
+    def q(sqlText: doobie.Fragment): IO[Long] = sqlText.query[Long].unique.transact(xa)
+    val events = new EventStore(xa)
+    List(
+      Metrics.gauge("skuaka.users.total", "有効なユーザーの数")(q(sql"select count(*) from app_user where not disabled")),
+      Metrics.gauge("skuaka.users.active_24h", "24時間以内にログインしたユーザーの数")(q(sql"select count(*) from app_user where last_login_at > now() - interval '24 hours'")),
+      Metrics.gauge("skuaka.sessions.active", "有効なセッションの数")(q(sql"select count(*) from session where expires_at > now()")),
+      Metrics.gauge("skuaka.events.today", "今日（Asia/Tokyo）の予定の数（繰り返しは回ごと）", 5.minutes)(todayEvents(events)),
+      Metrics.gauge("skuaka.events.total", "予定の数（繰り返しの予定は1つ）", 5.minutes)(q(sql"select count(*) from event")),
+      Metrics.gauge("skuaka.push.subscriptions", "プッシュ通知を受け取る端末の数")(q(sql"select count(*) from push_subscription"))
+    ).sequence_
+
+  /** 今日の予定の数（繰り返しを展開して数える）. */
+  private def todayEvents(events: EventStore): IO[Long] =
+    val zone = java.time.ZoneId.of("Asia/Tokyo")
+    IO(java.time.LocalDate.now(zone)).flatMap { d =>
+      val (from, to) = (d.atStartOfDay(zone).toInstant, d.plusDays(1).atStartOfDay(zone).toInstant)
+      events.overlapping(from, to).map(_.map(r => skuaka.core.Expand.occurrences(r.span, r.zone, r.recurrence, r.exdates.toSet, from, to, zone).size.toLong).sum)
+    }
+
+  /** 期限の切れたセッション・ログイン途中の状態・古いリマインダーの送信の記録を消す（1時間ごと）. */
+  private def purgeLoop(users: UserStore, events: EventStore): IO[Unit] =
+    (IO.sleep(1.minute) *> ((IO.realTimeInstant.flatMap(users.purgeExpired) *> events.purgeReminders)
+      .handleErrorWith(e => skuaka.observe.Log.println(s"[skuaka] purge failed: $e")) *> IO.sleep(1.hour)).foreverM).void
 
   /**
    * 画面の CSP. スクリプトは自分のサイトのものと、index.html に直接書いたもの（テーマの読み込み. ハッシュで許す）だけ.
-   * 画像はアイコン（IdP の画像は外部の https）のため広めにする.
+   * skorimako のブラウザの観測（RUM）が設定されていれば、その rum.js の読み込みと送信も許す（rum はそのオリジン）.
+   * 画像はアイコン（IdP の画像は外部の https）のため広めにする. Service Worker・manifest は自分のサイトなので default-src で足りる.
    */
-  def spaCsp(indexHtml: String): String =
+  def spaCsp(indexHtml: String, rum: Option[String] = RumRoutes.origin): String =
     val inline = "(?s)<script>(.*?)</script>".r.findAllMatchIn(indexHtml).map(m =>
       s"'sha256-${java.util.Base64.getEncoder.encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(m.group(1).getBytes("UTF-8")))}'")
-    (List("default-src 'self'", ("script-src 'self'" :: inline.toList).mkString(" "), "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:", "connect-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'",
-      "form-action 'self'")).mkString("; ")
+    (List("default-src 'self'", ("script-src 'self'" :: inline.toList ++ rum.toList).mkString(" "), "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:", ("connect-src 'self'" :: rum.toList).mkString(" "), "object-src 'none'", "base-uri 'self'",
+      "frame-ancestors 'none'", "form-action 'self'")).mkString("; ")
 
   /** ビルド済みの画面の配信. 存在しないパスは index.html（SPA）. */
   private def spa(dir: String): IO[HttpRoutes[IO]] =

@@ -11,6 +11,9 @@ val doobieV = "1.0.0-RC12"
 val ceV     = "3.7.1"
 val munitV  = "1.3.6"
 val flywayV = "11.3.0"
+val otel4sV   = "1.2.0"
+val otelV     = "1.68.0"
+val otelInstV = "2.33.1-alpha"
 
 // http4s のサーバー側（ルートの DSL と JSON）
 val http4sServer = Seq(
@@ -56,7 +59,7 @@ lazy val core = (project in file("modules/core"))
   .settings(commonTest)
 
 lazy val db = (project in file("modules/db"))
-  .dependsOn(core)
+  .dependsOn(core, observe)
   .settings(commonTest)
   .settings(
     libraryDependencies ++= Seq(
@@ -93,8 +96,37 @@ lazy val devidp = (project in file("modules/devidp"))
     fork := true
   )
 
+// 観測（OpenTelemetry: otel4s-oteljava）. ログ・メトリクス・トレースを OTLP で skorimako に送る
+lazy val observe = (project in file("modules/observe"))
+  .settings(commonTest)
+  .settings(
+    libraryDependencies ++= http4sServer ++ Seq(
+      "org.typelevel"   %% "otel4s-oteljava"                 % otel4sV,
+      "org.typelevel"   %% "otel4s-oteljava-context-storage" % otel4sV,
+      "org.typelevel"   %% "otel4s-instrumentation-metrics"  % otel4sV,
+      "io.opentelemetry" % "opentelemetry-exporter-otlp"     % otelV,
+      "io.opentelemetry.instrumentation" % "opentelemetry-logback-appender-1.0" % otelInstV,
+      "io.opentelemetry.instrumentation" % "opentelemetry-logback-mdc-1.0"      % otelInstV,
+      "io.opentelemetry.instrumentation" % "opentelemetry-runtime-telemetry"    % otelInstV,
+      "org.http4s"      %% "http4s-client"                   % http4sV,
+      "ch.qos.logback"   % "logback-classic"                 % "1.5.18",
+      "org.tpolecat"    %% "doobie-core"                     % doobieV
+    )
+  )
+
+// プッシュ通知（PWA. Web Push の暗号化と VAPID は JDK の暗号の機能だけで実装）
+lazy val push = (project in file("modules/push"))
+  .dependsOn(db, observe)
+  .settings(commonTest)
+  .settings(
+    libraryDependencies ++= Seq(
+      "org.http4s" %% "http4s-client" % http4sV,
+      "io.circe"   %% "circe-core"    % circeV
+    )
+  )
+
 lazy val api = (project in file("modules/api"))
-  .dependsOn(core, db, auth, shared.jvm, devidp % "test->compile")
+  .dependsOn(core, db, auth, shared.jvm, observe, push, devidp % "test->compile")
   .settings(commonTest)
   .settings(
     libraryDependencies ++= http4sServer
@@ -114,5 +146,5 @@ lazy val app = (project in file("modules/app"))
   )
 
 lazy val root = (project in file("."))
-  .aggregate(shared.jvm, shared.js, web, core, db, auth, devidp, api, app)
+  .aggregate(shared.jvm, shared.js, web, core, db, auth, devidp, observe, push, api, app)
   .settings(name := "skuaka", publish / skip := true)

@@ -163,6 +163,8 @@ def zones: List[String] = Cal.timezones()
       <p class="small">予定に通知（10分前など）を付けると、この画面を開いている間にお知らせします。</p>
       <p class="small muted">デスクトップの通知: {{ permText(s) }}</p>
       <button v-if="canAsk(s)" @click="askPermission(s)">デスクトップの通知を許可する</button>
+      <p class="small">プッシュ通知を受け取ると、画面を閉じていても予定の通知と招待が届きます。</p>
+      <p><PushToggle /></p>
     </section>
     <ApiTokenSettings />
     <section class="panel">

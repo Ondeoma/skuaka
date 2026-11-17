@@ -65,7 +65,7 @@ def leave(props: Props): Unit =
       </div>
     </div>
     <div v-if="props.occ.location.nonEmpty" class="line"><span class="ic">📍</span><span class="loc">{{ props.occ.location }}</span></div>
-    <div v-if="meeting(props).isDefined" class="line"><span class="ic">🎥</span>
+    <div v-if="meeting(props).isDefined" class="line"><span class="ic"><span class="ico ico-video"></span></span>
       <a class="btn primary" :href='meeting(props).getOrElse("")' target="_blank" rel="noopener">Web 会議に参加</a></div>
     <div v-if="hasGuests(s)" class="line">
       <span class="ic">👥</span>

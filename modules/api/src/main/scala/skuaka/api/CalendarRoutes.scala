@@ -126,14 +126,15 @@ final class CalendarRoutes(calendars: CalendarStore, events: EventStore, users: 
 
     // iCalendar の配信（公開リンクを知っている人はだれでも読める. カレンダーアプリから URL で購読する）
     case GET -> Root / "ics" / file if file.endsWith(".ics") =>
-      calendars.byPublicToken(file.stripSuffix(".ics")).flatMap {
-        case None => NotFound()
+      skuaka.observe.Telemetry.span("ics.feed")(calendars.byPublicToken(file.stripSuffix(".ics")).flatMap {
+        case None => skuaka.observe.Metrics.count("skuaka.ics.requests", "result" -> "not_found") *> NotFound()
         case Some(c) =>
           events.forCalendar(c.id).flatMap { rows =>
             val evs = rows.map(VisibleEvent.of(_, Some(c.access), None, 0).row)
               .map(r => IcsEvent(s"${r.id}@skuaka", r.title, r.description, r.location, r.span, r.zone, r.recurrence, r.exdates, r.updatedAt))
-            IO.pure(TextResponse(Status.Ok, Ics.calendar(c.name, evs, Instant.now()), MediaType.unsafeParse("text/calendar"))
-              .putHeaders("Cache-Control" -> "no-cache"))
+            skuaka.observe.Metrics.count("skuaka.ics.requests", "result" -> "ok") *>
+              IO.pure(TextResponse(Status.Ok, Ics.calendar(c.name, evs, Instant.now()), MediaType.unsafeParse("text/calendar"))
+                .putHeaders("Cache-Control" -> "no-cache"))
           }
-      }
+      })
   }

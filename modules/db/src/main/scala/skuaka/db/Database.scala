@@ -25,7 +25,8 @@ object Database:
     hc.setValidationTimeout(3000)
     hc.setKeepaliveTime(60000)
     hc.setMaxLifetime(600000)
-    HikariTransactor.fromHikariConfig[IO](hc)
+    // SQL ごとにトレースの子のスパンと所要時間のメトリクスを残す（skorimako）
+    HikariTransactor.fromHikariConfig[IO](hc, Some(skuaka.observe.DbTelemetry.logHandler))
 
 /** 各メソッドを1トランザクションで実行するストアの共通部分. */
 abstract class TxStore(xa: Transactor[IO]):

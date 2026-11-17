@@ -27,7 +27,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
 
   /** ログインした人のカレンダーを用意してから、セッションを発行する. */
   private def loggedIn(u: User, idToken: Option[String]): IO[ResponseCookie] =
-    calendars.ensurePrimary(u) *> sessions.issue(u, idToken)
+    calendars.ensurePrimary(u) *> sessions.issue(u, idToken) <* skuaka.observe.Metrics.count("skuaka.logins", "via" -> idToken.fold("dev")(_ => "oidc"))
 
   private def page(title: String, msg: String, status: Status): IO[Response[IO]] =
     val esc = (s: String) => s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
@@ -60,7 +60,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
                 // 理由の詳細（検証に失敗した項目など）はログにだけ出す
                 case Left(e: LoginDenied) => page("ログインできませんでした", e.getMessage, Status.Forbidden)
                 case Left(e) =>
-                  IO.println(s"[skuaka] login failed: ${e.getMessage}") *>
+                  skuaka.observe.Log.println(s"[skuaka] login failed: ${e.getMessage}") *>
                     page("ログインできませんでした", "IdP からの応答を確かめられませんでした。時間をおいてもう一度試してください。", Status.Unauthorized)
                 case Right(res) =>
                   val id = res.identity

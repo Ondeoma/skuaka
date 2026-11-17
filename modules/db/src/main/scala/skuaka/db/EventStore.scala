@@ -150,3 +150,32 @@ final class EventStore(xa: Transactor[IO]) extends TxStore(xa):
 
   /** ゲストから外れる（招待された予定を自分のカレンダーから消す）. */
   def leave(id: UUID, uid: UUID): IO[Unit] = tx(sql"delete from event_attendee where event_id = $id and user_id = $uid".update.run.void)
+
+  // ---------------------------------------------------------------- リマインダー（プッシュ通知）・メトリクス
+
+  /** すべてのカレンダーの [from, to) に重なりうる予定（timedWithReminders なら、通知の付いた時刻のある予定だけ）. 繰り返しの展開は呼び出し側で行う. */
+  def overlapping(from: Instant, to: Instant, timedWithReminders: Boolean = false): IO[List[EventRow]] = tx(
+    (fr"select" ++ cols ++ fr"from event e where" ++ overlaps("e", from, to) ++
+      (if timedWithReminders then fr"and not e.all_day and cardinality(e.reminders) > 0" else Fragment.empty)).query[EventRow].to[List]
+  )
+
+  /**
+   * リマインダーを受け取る人（ユーザーの ID とタイムゾーン）: カレンダーの所有者・共有された人（チームへの公開で加えた人は除く）と、
+   * ゲスト. 欠席と返事した人・無効なユーザーは除く.
+   */
+  def reminderTargets(id: UUID, calendarId: UUID): IO[List[(UUID, String)]] = tx(
+    sql"""select u.id, u.timezone from app_user u
+          where not u.disabled and u.id in (
+            select m.user_id from calendar_member m where m.calendar_id = $calendarId and m.role in ('owner', 'edit', 'view')
+            union select a.user_id from event_attendee a where a.event_id = $id)
+          and not exists (select 1 from event_attendee d where d.event_id = $id and d.user_id = u.id and d.response = 'declined')"""
+      .query[(UUID, String)].to[List]
+  )
+
+  /** リマインダーを送った印を付ける. 初めてなら true（ほかのノードが先に付けていれば false. 送らない）. */
+  def markReminder(id: UUID, occurrence: String, minutes: Int): IO[Boolean] = tx(
+    sql"insert into reminder_sent (event_id, occurrence, minutes) values ($id, $occurrence, $minutes) on conflict do nothing".update.run.map(_ > 0)
+  )
+
+  /** 古いリマインダーの送信の記録を消す（2日より前）. */
+  def purgeReminders: IO[Unit] = tx(sql"delete from reminder_sent where sent_at < now() - interval '2 days'".update.run.void)

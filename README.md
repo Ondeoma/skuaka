@@ -5,7 +5,7 @@
 skuaka は、チームで予定を管理・共有するためのカレンダーです。ログインは OpenID Connect（OIDC）。ライセンス: MIT
 
 - **表示**: 日・週・月・スケジュール（31日分の一覧）、ミニカレンダー、日本の祝日（振替休日・国民の休日を含む）、現在時刻の線、ダークモード、スマートフォンの画面幅
-- **予定**: タイトル・日時・終日・複数日・場所・説明・色・通知（1つの予定に5つまで。予定の時刻〜1週間前。画面を開いている間にお知らせ・デスクトップ通知。終日の予定は通知しない）
+- **予定**: タイトル・日時・終日・複数日・場所・説明・色・通知（1つの予定に5つまで。予定の時刻〜1週間前。画面を開いている間にお知らせ・デスクトップ通知。プッシュ通知（PWA）を受け取る端末には画面を閉じていても届く。終日の予定は通知しない）
   - 週・日の表示で空いたところをドラッグして作成（日をまたいでもよい）、予定をドラッグで移動、下の端で長さを変更
   - 週の表示の終日の欄・月の表示では、空いたところをドラッグして、またいだ日数の終日の予定を作成。月の表示では予定をドラッグで別の日へ
   - 重なった予定は横に並べ、24時間以上の予定は「終日」の欄に帯で表示
@@ -38,6 +38,8 @@ Scala.js + [Scalactive](https://github.com/Ondeoma/scalactive)、Vite。設計�
 | `modules/shared` | バックエンドと画面（Scala.js）で共有する API の型（circe）と、繰り返し（RRULE）の読み書き |
 | `modules/core` | 繰り返しの展開、iCalendar の書き出し（純粋なロジック） |
 | `modules/db` | doobie のストア、Flyway のマイグレーション |
+| `modules/observe` | 観測（OpenTelemetry. ログ・メトリクス・トレースを OTLP で skorimako に送る） |
+| `modules/push` | プッシュ通知（PWA. Web Push の暗号化と VAPID. 招待と予定のリマインダーを送る） |
 | `modules/auth` | OIDC（Authorization Code + PKCE + nonce、ID トークンの署名の検証（JWKS）、IdP からのログアウト） |
 | `modules/devidp` | 開発・テスト用の簡易 OIDC プロバイダ（本番では使わない） |
 | `modules/api` | http4s のルート（認証・カレンダー・予定・iCalendar の配信） |
@@ -98,6 +100,10 @@ Docker: `scripts/dist.sh` のあと `docker build -f deploy/docker/app.Dockerfil
 | `APP_SECRET` | 秘密の値（連携のトークン）を暗号化する鍵（16文字以上. skaka と連携するときは必須） |
 | `SKAKA_URL` / `SKAKA_CLIENT_ID` / `SKAKA_CLIENT_SECRET` | Web 会議（skaka）との連携（3つとも設定したときだけ）。skaka には Redirect URI `${PUBLIC_URL}/api/integrations/skaka/callback` を登録する |
 | `SKAKA_INTERNAL_URL` | サーバーから skaka を呼ぶ URL（省けば `SKAKA_URL`） |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` | ログ・メトリクス・トレースの送り先（skorimako の URL と `Authorization=Bearer sko_…`（ingest のキー））。未設定なら送らない。そのほか OpenTelemetry の標準の `OTEL_*` が使える |
+| `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
+| `SKORIMAKO_RUM_TOKEN` / `SKORIMAKO_RUM_URL` / `SKORIMAKO_RUM_SAMPLE_RATE` | 画面のブラウザの観測（skorimako の RUM）。トークンは skorimako の管理の画面で登録したアプリのもの。URL を省略すると `SKORIMAKO_URL` |
+| `VAPID_SUBJECT` | プッシュ通知（PWA）の連絡先（`mailto:…` か `https://…`。省略すると `PUBLIC_URL`）。VAPID の鍵は初回の起動で作って DB に保存する |
 | `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定せず、`PUBLIC_URL` が localhost の場合のみ。本番では使えない） |
 
 ### OIDC の IdP の設定

@@ -55,8 +55,12 @@ final class SkakaService(val cfg: SkakaConfig, http: Client[IO], val store: Inte
         .use(_ => IO.unit).timeout(10.seconds).handleError(_ => ())
     }) *> store.deleteToken(uid, Provider)
 
-  /** トークンで呼ぶ. 401 なら連携を外して Left. */
-  private def call[A](uid: UUID, req: Request[IO])(ok: Response[IO] => IO[A]): IO[Either[String, A]] =
+  /** トークンで呼ぶ. 401 なら連携を外して Left. op は観測（スパン・メトリクス）での呼び出しの名前. */
+  private def call[A](op: String, uid: UUID, req: Request[IO])(ok: Response[IO] => IO[A]): IO[Either[String, A]] =
+    skuaka.observe.Telemetry.span("skaka.call", "op" -> op)(callImpl(uid, req)(ok)).flatTap(r =>
+      skuaka.observe.Metrics.count("skuaka.skaka.calls", "op" -> op, "result" -> (if r.isRight then "ok" else "error")))
+
+  private def callImpl[A](uid: UUID, req: Request[IO])(ok: Response[IO] => IO[A]): IO[Either[String, A]] =
     token(uid).flatMap {
       case None => IO.pure(Left("skaka と連携していません。設定の画面で連携してください"))
       case Some(t) =>
@@ -66,19 +70,19 @@ final class SkakaService(val cfg: SkakaConfig, http: Client[IO], val store: Inte
           else ok(r).map(Right(_))
         }.timeout(15.seconds).handleErrorWith(e =>
           // 中継先の URL などの詳細はログにだけ出す
-          IO.println(s"[skuaka] skaka call failed: $e").as(Left("skaka に接続できませんでした")))
+          skuaka.observe.Log.println(s"[skuaka] skaka call failed: $e").as(Left("skaka に接続できませんでした")))
     }
 
   /** 会議室を作り、その URL を返す（名前は予定のタイトル. 100文字まで）. */
   def createRoom(uid: UUID, ev: SkakaEvent): IO[Either[String, String]] =
     val body = Json.obj("name" -> ev.title.take(100).asJson, "description" -> "".asJson, "guestAccess" -> false.asJson, "lobby" -> false.asJson,
       "event" -> eventJson(ev))
-    call(uid, Request[IO](Method.POST, api("/api/rooms")).withEntity(body))(_.as[Json]).map(_.flatMap(j =>
+    call("room.create", uid, Request[IO](Method.POST, api("/api/rooms")).withEntity(body))(_.as[Json]).map(_.flatMap(j =>
       j.hcursor.get[String]("url").left.map(_ => "skaka の応答を読めませんでした")))
 
   /** 会議室に結び付けた予定の写しを変える（タイトル・日時を変えたとき）. */
   def updateEvent(uid: UUID, code: String, ev: SkakaEvent): IO[Either[String, Unit]] =
-    call(uid, Request[IO](Method.PUT, api(s"/api/rooms/$code/event")).withEntity(eventJson(ev)))(_ => IO.unit)
+    call("room.event.update", uid, Request[IO](Method.PUT, api(s"/api/rooms/$code/event")).withEntity(eventJson(ev)))(_ => IO.unit)
 
   private def eventJson(ev: SkakaEvent): Json = Json.obj("eventId" -> ev.eventId.asJson, "title" -> ev.title.asJson, "start" -> ev.start.asJson,
     "end" -> ev.end.asJson, "allDay" -> ev.allDay.asJson)

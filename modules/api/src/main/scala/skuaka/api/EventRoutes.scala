@@ -5,6 +5,7 @@ import cats.syntax.all.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
 import skuaka.core.*
+import skuaka.observe.{Metrics, Telemetry}
 import skuaka.db.*
 import skuaka.shared.*
 
@@ -18,7 +19,8 @@ final case class EventInput(calendarId: UUID, title: String, description: String
     color: Option[String], recurrence: Option[Recurrence], attendees: List[UUID], reminders: List[Int], version: Option[Int])
 
 /** 予定の一覧（繰り返しの展開）・作成・変更・削除・招待への返事・検索. */
-final class EventRoutes(events: EventStore, calendars: CalendarStore, users: UserStore, val sessions: SessionAuth, skaka: Option[SkakaService] = None)
+final class EventRoutes(events: EventStore, calendars: CalendarStore, users: UserStore, val sessions: SessionAuth, skaka: Option[SkakaService] = None,
+    notifier: Option[EventNotifier] = None)
     extends RouteSupport:
 
   private def canEdit(role: Option[String]): Boolean = role.exists(r => CalRole.rank(r) >= CalRole.rank(CalRole.Edit))
@@ -93,6 +95,14 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
         meetingCode(r).traverse_(code => IO.whenA(r.title != before.title || r.span != before.span)(s.updateEvent(u.id, code, skakaEvent(r)).void))
       })
     }.handleError(_ => ())
+
+  /** 新しく招待した人を数え、プッシュ通知で知らせる（裏で. 保存の応答は待たせない）. */
+  private def invite(u: User, id: UUID, guests: List[UUID]): IO[Unit] =
+    IO.whenA(guests.nonEmpty)(Metrics.add("skuaka.invitations.sent", guests.size.toLong) *> notifier.traverse_(_.invited(u, id, guests).start.void))
+
+  /** 変更・削除の範囲（メトリクスの属性）. */
+  private def scopeOf(req: Request[IO], m: EventRow): String =
+    if m.recurrence.isEmpty then "single" else param(req, "scope").getOrElse(EditScope.All)
 
   private def check(r: EventReq): Either[String, EventInput] =
     for
@@ -208,9 +218,13 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
       authed(req) { u =>
         body[EventReq](req)(r => valid(check(r)) { in =>
           writable(u, in.calendarId) {
-            val id = UUID.randomUUID()
-            events.create(row(id, Some(u.id), in, Nil, 1), in.attendees.filterNot(_ == u.id)) *>
-              attachMeeting(u, id, r.withMeeting).flatMap(me => respondEvent(u, id, me).map(_.withStatus(Status.Created)))
+            val id     = UUID.randomUUID()
+            val guests = in.attendees.filterNot(_ == u.id)
+            Telemetry.span("event.create", "calendar.id" -> in.calendarId.toString)(
+              events.create(row(id, Some(u.id), in, Nil, 1), guests) *>
+                Metrics.count("skuaka.events.created", "recurring" -> in.recurrence.isDefined.toString, "meeting" -> r.withMeeting.contains(true).toString) *>
+                invite(u, id, guests) *>
+                attachMeeting(u, id, r.withMeeting).flatMap(me => respondEvent(u, id, me).map(_.withStatus(Status.Created))))
           }
         })
       }
@@ -223,23 +237,29 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
             writable(u, in.calendarId) {
               val m      = v.row
               val guests = in.attendees.filterNot(g => m.organizerId.contains(g))
-              cut(req, m) match
-                case Some(rest) =>
-                  // 切った回から新しい予定にする（「この予定」は1回だけ）
-                  val newId = UUID.randomUUID()
-                  val next  = if param(req, "scope").contains(EditScope.This) then in.copy(recurrence = None) else in
-                  events.split(rest, row(newId, m.organizerId, next, Nil, 1), guests) *>
-                    attachMeeting(u, newId, r.withMeeting).flatMap(respondEvent(u, newId, _))
-                case None =>
-                  val span = (m.recurrence, param(req, "occurrence"), in.recurrence) match
-                    case (Some(_), Some(k), Some(_)) => rebase(m, k, in)
-                    case _                           => in.span
-                  val next = in.copy(span = span)
-                  // 開始や繰り返しが変わったら、除いた回は意味がなくなるので捨てる
-                  val keep = if span.key == m.span.key && in.recurrence.map(_.toRrule) == m.rrule then m.exdates else Nil
-                  events.update(row(m.id, m.organizerId, next, keep, m.version), Some(guests), in.version).ifM(
-                    syncMeeting(u, m) *> attachMeeting(u, m.id, r.withMeeting).flatMap(respondEvent(u, m.id, _)),
-                    err(Status.Conflict, "ほかの人がこの予定を変更しました。開き直してください"))
+              Telemetry.span("event.update", "event.id" -> m.id.toString, "scope" -> scopeOf(req, m))(events.attendees(m.id).flatMap { before =>
+                // 前からのゲストには知らせない（新しく加えた人だけ）
+                val added = guests.filterNot(before.map(_.user.id).toSet)
+                def done(target: UUID) = Metrics.count("skuaka.events.updated", "scope" -> scopeOf(req, m)) *> invite(u, target, added)
+                cut(req, m) match
+                  case Some(rest) =>
+                    // 切った回から新しい予定にする（「この予定」は1回だけ）
+                    val newId = UUID.randomUUID()
+                    val next  = if param(req, "scope").contains(EditScope.This) then in.copy(recurrence = None) else in
+                    events.split(rest, row(newId, m.organizerId, next, Nil, 1), guests) *>
+                      done(newId) *>
+                      attachMeeting(u, newId, r.withMeeting).flatMap(respondEvent(u, newId, _))
+                  case None =>
+                    val span = (m.recurrence, param(req, "occurrence"), in.recurrence) match
+                      case (Some(_), Some(k), Some(_)) => rebase(m, k, in)
+                      case _                           => in.span
+                    val next = in.copy(span = span)
+                    // 開始や繰り返しが変わったら、除いた回は意味がなくなるので捨てる
+                    val keep = if span.key == m.span.key && in.recurrence.map(_.toRrule) == m.rrule then m.exdates else Nil
+                    events.update(row(m.id, m.organizerId, next, keep, m.version), Some(guests), in.version).ifM(
+                      done(m.id) *> syncMeeting(u, m) *> attachMeeting(u, m.id, r.withMeeting).flatMap(respondEvent(u, m.id, _)),
+                      err(Status.Conflict, "ほかの人がこの予定を変更しました。開き直してください"))
+              })
             }
           }
         })
@@ -247,7 +267,9 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
 
     case req @ DELETE -> Root / "api" / "events" / UuidVar(id) =>
       authed(req) { u =>
-        editable(u, id)(v => cut(req, v.row).fold(events.delete(id))(events.update(_, None, None).void) *> NoContent())
+        editable(u, id)(v => Telemetry.span("event.delete", "event.id" -> id.toString, "scope" -> scopeOf(req, v.row))(
+          cut(req, v.row).fold(events.delete(id))(events.update(_, None, None).void) *>
+            Metrics.count("skuaka.events.deleted", "scope" -> scopeOf(req, v.row)) *> NoContent()))
       }
 
     // 招待への返事
@@ -255,7 +277,8 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
       authed(req) { u =>
         body[RsvpReq](req) { r =>
           if !Rsvp.all.contains(r.response) then err(Status.BadRequest, "返事が正しくありません")
-          else events.rsvp(id, u.id, r.response).ifM(respondEvent(u, id), err(Status.NotFound, "招待されていない予定です"))
+          else Telemetry.span("event.rsvp", "event.id" -> id.toString, "response" -> r.response)(events.rsvp(id, u.id, r.response).ifM(
+            Metrics.count("skuaka.rsvp.responses", "response" -> r.response) *> respondEvent(u, id), err(Status.NotFound, "招待されていない予定です")))
         }
       }
 
