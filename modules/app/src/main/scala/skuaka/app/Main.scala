@@ -175,6 +175,10 @@ object Main extends IOApp.Simple:
     (IO.sleep(1.minute) *> ((IO.realTimeInstant.flatMap(users.purgeExpired) *> events.purgeReminders)
       .handleErrorWith(e => skuaka.observe.Log.println(s"[skuaka] purge failed: $e")) *> IO.sleep(1.hour)).foreverM).void
 
+  // IdP が http（開発環境など）のときは、そのアイコンの画像も許す（https の画像はもとから許している）
+  private val idpImg: String = sys.env.get("OIDC_ISSUER").flatMap(u => scala.util.Try(java.net.URI.create(u)).toOption)
+    .filter(u => u.getScheme == "http" && u.getAuthority != null).fold("")(u => s" http://${u.getAuthority}")
+
   /**
    * 画面の CSP. スクリプトは自分のサイトのものと、index.html に直接書いたもの（テーマの読み込み. ハッシュで許す）だけ.
    * skorimako のブラウザの観測（RUM）が設定されていれば、その rum.js の読み込みと送信も許す（rum はそのオリジン）.
@@ -184,7 +188,7 @@ object Main extends IOApp.Simple:
     val inline = "(?s)<script>(.*?)</script>".r.findAllMatchIn(indexHtml).map(m =>
       s"'sha256-${java.util.Base64.getEncoder.encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(m.group(1).getBytes("UTF-8")))}'")
     (List("default-src 'self'", ("script-src 'self'" :: inline.toList ++ rum.toList).mkString(" "), "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:", ("connect-src 'self'" :: rum.toList).mkString(" "), "object-src 'none'", "base-uri 'self'",
+      s"img-src 'self' data: blob: https:$idpImg", ("connect-src 'self'" :: rum.toList).mkString(" "), "object-src 'none'", "base-uri 'self'",
       "frame-ancestors 'none'", "form-action 'self'")).mkString("; ")
 
   /** ビルド済みの画面の配信. 存在しないパスは index.html（SPA）. */
