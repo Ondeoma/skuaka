@@ -99,6 +99,7 @@ Docker: `scripts/dist.sh` のあと `docker build -f deploy/docker/app.Dockerfil
 | `STATIC_DIR` | ビルド済みの画面（`dist/static`） |
 | `APP_SECRET` | 秘密の値（連携のトークン）を暗号化する鍵（16文字以上. skaka と連携するときは必須） |
 | `SKAKA_URL` / `SKAKA_CLIENT_ID` / `SKAKA_CLIENT_SECRET` | Web 会議（skaka）との連携（3つとも設定したときだけ）。skaka には Redirect URI `${PUBLIC_URL}/api/integrations/skaka/callback` を登録する |
+| `OAUTH_CLIENTS` | skuaka を使う兄弟のサービス（OAuth の認可コード + PKCE）。JSON の配列 `[{"id":"skakapo","secret":"…(16文字以上)","redirectUri":"https://…/api/connections/callback","name":"skakapo","scopes":["read","write"]}]`（`scopes` を省くと read だけ） |
 | `SKAKA_INTERNAL_URL` | サーバーから skaka を呼ぶ URL（省けば `SKAKA_URL`） |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` | ログ・メトリクス・トレースの送り先（skorimako の URL と `Authorization=Bearer sko_…`（ingest のキー））。未設定なら送らない。そのほか OpenTelemetry の標準の `OTEL_*` が使える |
 | `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
@@ -119,6 +120,15 @@ OpenID Connect の Discovery（`/.well-known/openid-configuration`）に対応�
 
 設定の画面（右上のメニュー →「設定」）の「API トークンと MCP」でトークンを作ります。値は作成したときだけ表示され、DB には SHA-256 だけを保存します。
 トークンの権限は作った人と同じで、「参照のみ」のトークンは GET（MCP では参照のツール）だけが使えます。トークンの作成・失効は画面からだけできます。
+
+### 兄弟のサービスとの連携（OAuth）
+
+`OAUTH_CLIENTS` に登録したサービス（AI エージェントの skakapo など）は、利用者の許可を得て、その人の権限で REST API と MCP を使えます。
+
+- `GET /oauth/authorize`（`response_type=code`、PKCE は `S256` だけ、`scope` は `read`・`write` のうちクライアントに許したもの。省くと `read`）。未ログインならログインしてから許可の画面に戻る
+- `POST /oauth/token`（クライアントの認証は Basic）。`grant_type` は `authorization_code` と `refresh_token`。アクセストークンは1時間で切れ、refresh token は使うたびに新しくなる
+- `POST /oauth/revoke`（RFC 7009。アクセストークンでも refresh token でもよい）
+- 発行したトークンは「<サービス名> 連携」の API トークンで、`read` だけなら参照のみ。設定の画面の「連携しているサービス」で確かめ・取り消せる。許可し直すと前のトークンは失効する
 
 REST API:
 

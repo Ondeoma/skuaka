@@ -107,20 +107,22 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
 
   // ---------------------------------------------------------------- API トークン
 
-  private val tokenCols = fr"id, name, prefix, scope, created_at, expires_at, last_used_at"
+  private val tokenCols = fr"id, name, prefix, scope, created_at, expires_at, last_used_at, oauth_client"
 
-  private def tokenDto(t: (UUID, String, String, String, Instant, Option[Instant], Option[Instant])): ApiTokenDto =
-    ApiTokenDto(t._1, t._2, t._3, t._4, t._5.toString, t._6.map(_.toString), t._7.map(_.toString))
+  private type TokenRow = (UUID, String, String, String, Instant, Option[Instant], Option[Instant], Option[String])
+
+  private def tokenDto(t: TokenRow): ApiTokenDto =
+    ApiTokenDto(t._1, t._2, t._3, t._4, t._5.toString, t._6.map(_.toString), t._7.map(_.toString), t._8)
 
   def createToken(userId: UUID, name: String, prefix: String, hash: Array[Byte], scope: String, expires: Option[Instant]): IO[ApiTokenDto] = tx(
     (fr"insert into api_token (id, user_id, name, prefix, token_hash, scope, expires_at) values (${UUID.randomUUID()}, $userId, $name, $prefix, $hash, $scope, $expires) returning" ++ tokenCols)
-      .query[(UUID, String, String, String, Instant, Option[Instant], Option[Instant])].unique.map(tokenDto)
+      .query[TokenRow].unique.map(tokenDto)
   )
 
-  /** 失効していないもの（期限切れも含む. 画面で期限切れと分かるように）. */
+  /** 失効していないもの（期限切れも含む. 画面で期限切れと分かるように. 連携のトークンは期限が切れても更新されるので含める）. */
   def tokens(userId: UUID): IO[List[ApiTokenDto]] = tx(
     (fr"select" ++ tokenCols ++ fr"from api_token where user_id = $userId and revoked_at is null order by created_at desc")
-      .query[(UUID, String, String, String, Instant, Option[Instant], Option[Instant])].to[List].map(_.map(tokenDto))
+      .query[TokenRow].to[List].map(_.map(tokenDto))
   )
 
   def revokeToken(userId: UUID, id: UUID): IO[Boolean] = tx(

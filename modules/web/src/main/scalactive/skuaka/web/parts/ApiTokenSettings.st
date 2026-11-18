@@ -5,7 +5,7 @@ import org.scalajs.dom
 
 import scala.scalajs.js
 
-// API トークンの作成・失効と、MCP（AI アシスタントからの利用）のつなぎ方
+// 連携しているサービス（OAuth の認可で発行したトークン）の確認・取り消し、API トークンの作成・失効と、MCP（AI アシスタントからの利用）のつなぎ方
 case class State(tokens: RV[List[ApiTokenDto]] = RV(Nil), name: RV[String] = RV(""), scope: RV[String] = RV(TokenScope.Write),
                  days: RV[String] = RV("90"), created: RV[Option[String]] = RV(None))
 
@@ -25,6 +25,11 @@ def create(s: State): Unit = {
   }
 }
 
+def disconnect(s: State, t: ApiTokenDto): Unit =
+  Dialog.confirm(s"「${t.oauthClient.getOrElse(t.name)}」との連携をやめますか？（このサービスはあなたの予定を読み書きできなくなります）", "連携をやめる") {
+    Store.report(Api.revokeToken(t.id))(_ => { Store.toast("連携をやめました"); load(s) })
+  }
+
 def revoke(s: State, t: ApiTokenDto): Unit =
   Dialog.confirm(s"API トークン「${t.name}」を失効させますか？（このトークンを使っているスクリプトや AI アシスタントは使えなくなります）", "失効") {
     Store.report(Api.revokeToken(t.id))(_ => load(s))
@@ -40,10 +45,20 @@ def info(t: ApiTokenDto): String = List(
   Some(t.lastUsedAt.fold("未使用")(u => s"最後に使用 ${when(u)}"))
 ).flatten.mkString("・")
 
+// 連携のトークンは1時間ごとに更新されるので、期限ではなく許可した日時と最後に使った日時を出す
+def linkInfo(t: ApiTokenDto): String = List(
+  TokenScope.label(t.scope),
+  s"許可 ${when(t.createdAt)}",
+  t.lastUsedAt.fold("未使用")(u => s"最後に使用 ${when(u)}")
+).mkString("・")
+def links(s: State) = s.tokens.mapC(_.filter(_.oauthClient.isDefined))
+def manual(s: State) = s.tokens.mapC(_.filter(_.oauthClient.isEmpty))
+def noLinks(s: State) = links(s).mapC(_.isEmpty)
+
 def origin: String = dom.window.location.origin
 def mcpUrl: String = origin + "/mcp"
 def secret(s: State) = s.created.mapC(_.getOrElse("<API トークン>"))
-def noTokens(s: State) = s.tokens.mapC(_.isEmpty)
+def noTokens(s: State) = manual(s).mapC(_.isEmpty)
 def hasCreated(s: State) = s.created.mapC(_.isDefined)
 def createdText(s: State) = s.created.mapC(_.getOrElse(""))
 def jsonConf(s: State) = secret(s).mapC(t =>
@@ -55,6 +70,20 @@ val periods: List[(String, String)] = List("30" -> "30日", "90" -> "90日", "36
 </script>
 
 <template>
+  <div class="wrap">
+  <section class="panel">
+    <h2>連携しているサービス</h2>
+    <p class="small">あなたが許可して、あなたの権限で予定を使っているサービス（AI エージェントの skakapo など）です。</p>
+    <div v-for="t in links(s)" :key="t.id" class="token">
+      <div class="grow">
+        <div>{{ t.name }}</div>
+        <div class="muted small">{{ linkInfo(t) }}</div>
+      </div>
+      <button class="danger small" @click="disconnect(s, t)">連携をやめる</button>
+    </div>
+    <p v-if="noLinks(s)" class="muted small">連携しているサービスはありません。</p>
+  </section>
+
   <section class="panel">
     <h2>API トークンと MCP</h2>
     <p class="small">API トークンを使うと、スクリプトから REST API を呼んだり、MCP に対応した AI アシスタントから予定を読み書きしたりできます。
@@ -73,7 +102,7 @@ val periods: List[(String, String)] = List("30" -> "30日", "90" -> "90日", "36
         <button class="ghost" @click="s.created := None">閉じる</button>
       </div>
     </div>
-    <div v-for="t in s.tokens" :key="t.id" class="token">
+    <div v-for="t in manual(s)" :key="t.id" class="token">
       <div class="grow">
         <div>{{ t.name }} <code class="muted">{{ t.prefix }}…</code></div>
         <div class="muted small">{{ info(t) }}</div>
@@ -92,9 +121,11 @@ val periods: List[(String, String)] = List("30" -> "30日", "90" -> "90日", "36
     <p class="small">画面と同じ API（<a href="/api/endpoints" target="_blank">一覧</a>）を、<code>Authorization: Bearer</code> を付けて呼べます。</p>
     <div class="row code"><pre class="grow">{{ curlCmd(s) }}</pre><button class="small" @click="Dom.copy(curlCmd(s).v)">コピー</button></div>
   </section>
+  </div>
 </template>
 
 <style scoped>
+.wrap { display: contents; }
 h3 { margin-top: 1.4rem; }
 .new { flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
 .new input { min-width: 12rem; }

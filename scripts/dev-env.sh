@@ -14,3 +14,5 @@ fi
 export APP_SECRET=${APP_SECRET:-skuaka-dev-app-secret-0123456789}
 # Web 会議（skaka）との連携: skaka の開発環境（画面 :5177. /oauth・/api を skaka のサーバーへ中継）に登録済みの値
 export SKAKA_URL=${SKAKA_URL:-http://localhost:5177} SKAKA_CLIENT_ID=${SKAKA_CLIENT_ID:-skuaka} SKAKA_CLIENT_SECRET=${SKAKA_CLIENT_SECRET:-skuaka-dev-secret-0123456789}
+# skuaka が認可を出す側（skakapo が利用者の権限で REST API・MCP を使う）。skakapo の開発環境（:5199）に登録する値
+export OAUTH_CLIENTS='[{"id":"skakapo","secret":"skakapo-dev-secret-0123456789","redirectUri":"http://localhost:5199/api/connections/callback","name":"skakapo","scopes":["read","write"]}]'

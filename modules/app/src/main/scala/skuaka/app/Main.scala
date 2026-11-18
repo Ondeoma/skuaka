@@ -36,6 +36,19 @@ object Config:
     scala.util.Try(java.net.URI.create(url).getHost).toOption.flatMap(Option(_)).map(_.toLowerCase)
       .exists(h => Set("localhost", "127.0.0.1", "[::1]").contains(h) || h.endsWith(".localhost"))
 
+  /** OAUTH_CLIENTS: [{"id":"skakapo","secret":"…","redirectUri":"https://…/callback","name":"skakapo","scopes":["read","write"]}]（scopes は省くと read だけ） */
+  private def oauthClients: Either[String, List[OAuthClient]] =
+    opt("OAUTH_CLIENTS").fold(Right(Nil)) { s =>
+      io.circe.parser.parse(s).flatMap(_.as[List[io.circe.Json]]).left.map(_ => "OAUTH_CLIENTS は JSON の配列で指定してください").flatMap(_.traverse { j =>
+        val c = j.hcursor
+        (c.get[String]("id"), c.get[String]("secret"), c.get[String]("redirectUri")).tupled.toOption
+          .filter((id, sec, uri) => id.nonEmpty && sec.length >= 16 && (uri.startsWith("https://") || uri.startsWith("http://localhost")))
+          .map((id, sec, uri) => OAuthClient(id, sec, uri, c.get[String]("name").getOrElse(id),
+            c.get[List[String]]("scopes").toOption.map(_.filter(Set("read", "write"))).filter(_.nonEmpty).getOrElse(List("read"))))
+          .toRight("OAUTH_CLIENTS の各要素には id・secret（16文字以上）・redirectUri（https://）を指定してください")
+      })
+    }
+
   def load: IO[AppConfig] = IO.fromEither(
     (for
       dbUrl  <- required("DATABASE_URL")
@@ -63,13 +76,15 @@ object Config:
                   case Some(s) if s.length < 16 => Left("APP_SECRET は16文字以上にしてください")
                   case None if skaka.isDefined  => Left("skaka と連携するには APP_SECRET（16文字以上の秘密の値）を設定してください")
                   case s                        => Right(s)
+      clients <- oauthClients
     yield AppConfig(
       port = int("HTTP_PORT").getOrElse(8080),
       db = DbConfig(dbUrl, dbUser, dbPass, int("DATABASE_POOL_SIZE").getOrElse(10)),
       oidc = oidc,
       api = ApiConfig(cookieSecure = pub.startsWith("https://"), publicUrl = pub, sessionTtl = int("SESSION_DAYS").getOrElse(14).days,
         devLogin = devLogin,
-        rateLimit = RateLimitConfig(int("RATE_LIMIT_AUTH").getOrElse(20), int("RATE_LIMIT_PUBLIC").getOrElse(120), proxies)),
+        rateLimit = RateLimitConfig(int("RATE_LIMIT_AUTH").getOrElse(20), int("RATE_LIMIT_PUBLIC").getOrElse(120), proxies),
+        oauthClients = clients),
       staticDir = opt("STATIC_DIR"),
       skaka = skaka,
       appSecret = secret
@@ -104,6 +119,7 @@ object Main extends IOApp.Simple:
         sess      = new SessionAuth(users, cfg.api)
         skaka     = (cfg.skaka, cfg.appSecret).mapN((c, k) => new SkakaService(c, http, new IntegrationStore(xa), new skuaka.auth.SecretBox(k)))
         _ <- Resource.eval(skaka.traverse_(s => skuaka.observe.Log.println(s"[skuaka] skaka（Web 会議）: ${s.cfg.url}")))
+        _ <- Resource.eval(cfg.api.oauthClients.traverse_(c => skuaka.observe.Log.println(s"[skuaka] OAuth クライアント: ${c.id}（${c.scopes.mkString(" ")}）")))
         _ <- Resource.eval(IO.whenA(oidc.isEmpty)(skuaka.observe.Log.println("[skuaka] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください")))
         // OIDC の設定の誤り（issuer の URL など）は起動時に知らせる（IdP が止まっていても起動はする）
         _ <- Resource.eval(oidc.traverse_(_.discover.attempt.flatMap {
@@ -117,9 +133,10 @@ object Main extends IOApp.Simple:
         _ <- purgeLoop(users, events).background
         _ <- notifier.reminderLoop.background
         web <- Resource.eval(cfg.staticDir.traverse(spa))
-        all = ApiRoutes(oidc, users, calendars, events, sess, cfg.api, skaka, Some(pushStore -> push), Some(notifier)) <+>
+        all = ApiRoutes(oidc, users, calendars, events, sess, cfg.api, skaka, Some(pushStore -> push), Some(notifier),
+                Some(new OAuthStore(xa))) <+>
                 SecurityHeaders(healthRoutes(xa) <+> RumRoutes.routes <+> web.getOrElse(HttpRoutes.empty[IO]), cfg.api.cookieSecure)
-        httpApp <- HttpTelemetry(ErrorHandling.Custom.recoverWith(all.orNotFound)(handler), List("/api", "/auth", "/ics", "/mcp"))
+        httpApp <- HttpTelemetry(ErrorHandling.Custom.recoverWith(all.orNotFound)(handler), List("/api", "/auth", "/ics", "/mcp", "/oauth"))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")
                .withPort(Port.fromInt(cfg.port).getOrElse(port"8080"))
@@ -199,7 +216,7 @@ object Main extends IOApp.Simple:
     val csp   = spaCsp(indexHtml)
     val files = fileService[IO](FileService.Config(dir))
     val index = HttpRoutes.of[IO] {
-      case req @ GET -> path if !path.segments.headOption.map(_.decoded()).exists(Set("api", "auth", "ics", "mcp", "healthz")) =>
+      case req @ GET -> path if !path.segments.headOption.map(_.decoded()).exists(Set("api", "auth", "ics", "mcp", "oauth", "healthz")) =>
         StaticFile.fromPath(Path(dir) / "index.html", Some(req)).getOrElseF(NotFound())
     }
     HttpRoutes[IO] { req =>

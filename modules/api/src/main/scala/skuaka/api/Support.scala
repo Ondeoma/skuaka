@@ -25,8 +25,16 @@ final case class ApiConfig(
     cookieName: String = "skuaka_session",
     devLogin: Boolean = false,
     rateLimit: RateLimitConfig = RateLimitConfig(),
-    version: String = "0.1.0"
+    version: String = "0.1.0",
+    oauthClients: List[OAuthClient] = Nil
 )
+
+/** 認可を求める兄弟のサービス（OAUTH_CLIENTS で登録する）. redirectUri は完全一致で照合する. scopes は許すスコープ（read・write）. */
+final case class OAuthClient(id: String, secret: String, redirectUri: String, name: String, scopes: List[String] = List(TokenScope.Read))
+
+/** サーバーで組み立てる HTML の文字の置き換え. */
+object Html:
+  def escape(s: String): String = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
 
 /** 誰の要求か. token は API トークンで呼ばれたときの (トークンID, スコープ). */
 final case class Principal(user: User, token: Option[(UUID, String)]):
@@ -146,15 +154,16 @@ object SecurityHeaders:
       withCsp.putHeaders(fixed*)
     }
 
-/** アプリのルートをまとめる（REST API・iCalendar の配信・MCP・プッシュ通知の購読）. MCP は REST API をトークンで内部から呼ぶ. */
+/** アプリのルートをまとめる（REST API・iCalendar の配信・MCP・プッシュ通知の購読・兄弟のサービスへの認可（OAuth））. MCP は REST API をトークンで内部から呼ぶ. */
 object ApiRoutes:
   def apply(oidc: Option[skuaka.auth.OidcClient], users: UserStore, calendars: CalendarStore, events: EventStore, sess: SessionAuth,
       cfg: ApiConfig, skaka: Option[SkakaService] = None, push: Option[(skuaka.push.PushStore, skuaka.push.PushService)] = None,
-      notifier: Option[EventNotifier] = None): HttpRoutes[IO] =
+      notifier: Option[EventNotifier] = None, oauth: Option[OAuthStore] = None): HttpRoutes[IO] =
     val rest = new AuthRoutes(oidc, users, calendars, sess, cfg, skaka.map(_.cfg.url)).routes <+>
       new CalendarRoutes(calendars, events, users, sess, cfg).routes <+>
       new EventRoutes(events, calendars, users, sess, skaka, notifier).routes <+>
       new SkakaRoutes(skaka, sess, cfg).routes <+>
+      oauth.fold(HttpRoutes.empty[IO])(new OAuthRoutes(_, sess, cfg).routes) <+>
       push.fold(HttpRoutes.empty[IO])((store, service) => new PushRoutes(store, service, sess).routes)
     // 本文は MaxBody まで（大きな本文でメモリを使い切らせない. アイコンの 1MB より大きくしておく）.
     // Content-Length が超えていれば、EntityLimiter はルートに入る前に例外にするので、ここで 413 にする

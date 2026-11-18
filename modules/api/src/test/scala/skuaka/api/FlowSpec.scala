@@ -26,7 +26,10 @@ class FlowSpec extends munit.CatsEffectSuite:
 
   private val dbCfg = DbConfig(sys.env.getOrElse("TEST_DATABASE_URL", "jdbc:postgresql://localhost:54349/skuaka_test"), "skuaka", "skuaka", 4)
   private val issuer = "http://localhost:9999"
-  private val apiCfg = ApiConfig(cookieSecure = false, publicUrl = "http://localhost:8095")
+  private val kakapoCb = "http://localhost:5199/api/connections/callback"
+  private val apiCfg = ApiConfig(cookieSecure = false, publicUrl = "http://localhost:8095", oauthClients = List(
+    OAuthClient("skakapo", "skakapo-test-secret-0123456789", kakapoCb, "skakapo", List(TokenScope.Read, TokenScope.Write)),
+    OAuthClient("reader", "reader-test-secret-0123456789", "http://localhost:5200/cb", "reader")))
 
   // ---------------------------------------------------------------- 偽の skaka（Web 会議）
 
@@ -80,7 +83,7 @@ class FlowSpec extends munit.CatsEffectSuite:
     val sess  = new SessionAuth(users, apiCfg)
     val skaka = new SkakaService(SkakaConfig(skakaUrl, skakaUrl, "skuaka", "skuaka-test-secret-0123456789"), Client.fromHttpApp(fakeSkaka.orNotFound),
       new IntegrationStore(xa), new skuaka.auth.SecretBox("test-app-secret-0123456789"))
-    val app = ApiRoutes(Some(oidc), users, cals, events, sess, apiCfg, Some(skaka)).orNotFound
+    val app = ApiRoutes(Some(oidc), users, cals, events, sess, apiCfg, Some(skaka), oauth = Some(new OAuthStore(xa))).orNotFound
     (idp.routes.orNotFound, app, xa))
 
   override def munitFixtures = List(fixture)
@@ -554,3 +557,155 @@ class FlowSpec extends munit.CatsEffectSuite:
     yield ()
   }
 
+  // ---------------------------------------------------------------- 兄弟のサービスへの認可（OAuth）
+
+  private val verifier  = "v" * 50
+  private val challenge = skuaka.auth.Crypto.pkceChallenge(verifier)
+
+  private def authorizeUri(client: String = "skakapo", redirect: String = kakapoCb, scope: String = "read write", method: String = "S256"): String =
+    def e(v: String) = java.net.URLEncoder.encode(v, "UTF-8")
+    s"/oauth/authorize?response_type=code&client_id=${e(client)}&redirect_uri=${e(redirect)}&scope=${e(scope)}&state=st1" +
+      s"&code_challenge=$challenge&code_challenge_method=$method"
+
+  private def tokenReq(form: (String, String)*)(client: String = "skakapo", secret: String = "skakapo-test-secret-0123456789"): IO[Response[IO]] =
+    fixture()._2.run(Request[IO](Method.POST, uri"/oauth/token").withEntity(UrlForm(form*))
+      .putHeaders(org.http4s.headers.Authorization(BasicCredentials(client, secret))))
+
+  /** ログインしたユーザーが許可して、トークンの応答（JSON）を受け取る. */
+  private def grant(session: String, scope: String): IO[Json] =
+    val app = fixture()._2
+    for
+      pg   <- app.run(Request[IO](Method.GET, Uri.unsafeFromString(authorizeUri(scope = scope))).putHeaders(Cookie(RequestCookie("skuaka_session", session))))
+      _     = assertEquals(pg.status, Status.Ok)
+      html <- pg.bodyText.compile.string
+      _     = assert(html.contains("skakapo") && html.contains("<code>read</code>"), html)
+      _     = assertEquals(html.contains("<code>write</code>"), scope.contains("write"))
+      csrf  = pg.cookies.find(_.name == "skuaka_oauth_csrf").map(_.content).getOrElse(fail("no csrf cookie"))
+      form  = UrlForm(List("response_type" -> "code", "client_id" -> "skakapo", "redirect_uri" -> kakapoCb, "scope" -> scope, "state" -> "st1",
+                "code_challenge" -> challenge, "code_challenge_method" -> "S256", "csrf" -> csrf, "decision" -> "allow")*)
+      // CSRF の値が合わなければ許可しない
+      bad  <- app.run(Request[IO](Method.POST, uri"/oauth/authorize").withEntity(form)
+                .putHeaders(Cookie(RequestCookie("skuaka_session", session), RequestCookie("skuaka_oauth_csrf", "nope"))))
+      _     = assertEquals(bad.status, Status.BadRequest)
+      ok   <- app.run(Request[IO](Method.POST, uri"/oauth/authorize").withEntity(form)
+                .putHeaders(Cookie(RequestCookie("skuaka_session", session), RequestCookie("skuaka_oauth_csrf", csrf))))
+      _     = assertEquals(ok.status, Status.Found)
+      cb    = location(ok)
+      _     = assert(cb.renderString.startsWith(kakapoCb + "?"), cb.renderString)
+      _     = assertEquals(cb.params.get("state"), Some("st1"))
+      code  = cb.params.getOrElse("code", fail("no code"))
+      // 違う verifier・違う redirect_uri は invalid_grant（コードはそこで使用済みになる）
+      wrong <- tokenReq("grant_type" -> "authorization_code", "code" -> code, "redirect_uri" -> kakapoCb, "code_verifier" -> ("w" * 50))()
+      _      = assertEquals(wrong.status, Status.BadRequest)
+      pg2   <- app.run(Request[IO](Method.GET, Uri.unsafeFromString(authorizeUri(scope = scope))).putHeaders(Cookie(RequestCookie("skuaka_session", session))))
+      csrf2  = pg2.cookies.find(_.name == "skuaka_oauth_csrf").map(_.content).getOrElse(fail("no csrf cookie"))
+      ok2   <- app.run(Request[IO](Method.POST, uri"/oauth/authorize").withEntity(UrlForm(form.values.updated("csrf", cats.data.Chain(csrf2))))
+                 .putHeaders(Cookie(RequestCookie("skuaka_session", session), RequestCookie("skuaka_oauth_csrf", csrf2))))
+      code2  = location(ok2).params.getOrElse("code", fail("no code"))
+      badc  <- tokenReq("grant_type" -> "authorization_code", "code" -> code2, "redirect_uri" -> kakapoCb, "code_verifier" -> verifier)(secret = "wrong-secret-0123456789")
+      _      = assertEquals(badc.status, Status.Unauthorized)
+      tok   <- tokenReq("grant_type" -> "authorization_code", "code" -> code2, "redirect_uri" -> kakapoCb, "code_verifier" -> verifier)().flatMap(json[Json])
+      // 同じコードは2回使えない
+      again <- tokenReq("grant_type" -> "authorization_code", "code" -> code2, "redirect_uri" -> kakapoCb, "code_verifier" -> verifier)()
+      _      = assertEquals(again.status, Status.BadRequest)
+    yield tok
+
+  test("OAuth: 未ログインはログインへ 302. 知らない client・違う redirect_uri は 400. 許していないスコープは invalid_scope. PKCE は S256 だけ") {
+    val app = fixture()._2
+    def get(u: String) = app.run(Request[IO](Method.GET, Uri.unsafeFromString(u)))
+    for
+      r1 <- get(authorizeUri())
+      _   = assertEquals(r1.status, Status.Found)
+      l1  = location(r1)
+      _   = assertEquals(l1.path.renderString, "/auth/login")
+      // ログインの後は、同じ認可の要求に戻る
+      _   = assert(l1.params.get("returnTo").exists(_.startsWith("/oauth/authorize?")), l1.renderString)
+      _   = assertEquals(SafePath.of(l1.params.get("returnTo")), l1.params("returnTo"))
+      r2 <- get(authorizeUri(client = "nobody"))
+      _   = assertEquals(r2.status, Status.BadRequest)
+      r3 <- get(authorizeUri(redirect = "https://evil.example.com/cb"))
+      _   = assertEquals(r3.status, Status.BadRequest)
+      r4 <- get(authorizeUri(client = "reader", redirect = "http://localhost:5200/cb", scope = "read write"))
+      _   = assertEquals(r4.status, Status.Found)
+      _   = assertEquals(location(r4).params.get("error"), Some("invalid_scope"))
+      r5 <- get(authorizeUri(scope = "read admin"))
+      _   = assertEquals(location(r5).params.get("error"), Some("invalid_scope"))
+      r6 <- get(authorizeUri(method = "plain"))
+      _   = assertEquals(location(r6).params.get("error"), Some("invalid_request"))
+      r7 <- tokenReq("grant_type" -> "authorization_code", "code" -> "x", "redirect_uri" -> kakapoCb, "code_verifier" -> verifier)(client = "nobody")
+      _   = assertEquals(r7.status, Status.Unauthorized)
+    yield ()
+  }
+
+  test("OAuth: 許可 → コード → トークンで /mcp と REST API を使える. refresh token で更新すると前のものは使えない. 設定の画面から取り消せる") {
+    for
+      a    <- login("小林 五郎", "kobayashi@example.com")
+      tok  <- grant(a, "read write")
+      at    = tok.hcursor.get[String]("access_token").getOrElse(fail(tok.noSpaces))
+      rt    = tok.hcursor.get[String]("refresh_token").getOrElse(fail(tok.noSpaces))
+      _     = assertEquals(tok.hcursor.get[String]("scope").toOption, Some("read write"))
+      _     = assertEquals(tok.hcursor.get[Long]("expires_in").toOption, Some(3600L))
+      tl   <- bearer(at, Method.POST, "/mcp", Some(Json.obj("jsonrpc" -> "2.0".asJson, "id" -> 1.asJson, "method" -> "tools/list".asJson))).flatMap(json[Json])
+      names = tl.hcursor.downField("result").downField("tools").as[List[Json]].getOrElse(Nil).flatMap(_.hcursor.get[String]("name").toOption)
+      _     = assert(names.contains("create_event"), tl.noSpaces)
+      (c1, e1) <- mcp(at, "create_event", Json.obj("title" -> "連携から".asJson, "start" -> "2026-12-03T10:00".asJson, "end" -> "2026-12-03T11:00".asJson))
+      _     = assert(!e1, c1)
+      me   <- bearer(at, Method.GET, "/api/me").flatMap(json[MeDto])
+      _     = assertEquals(me.name, "小林 五郎")
+      // 連携のトークンでトークンの管理はできない
+      tk   <- bearer(at, Method.GET, "/api/tokens")
+      _     = assertEquals(tk.status, Status.Forbidden)
+      // 更新: 新しいトークンが使え、前のトークンと refresh token は使えない
+      nt   <- tokenReq("grant_type" -> "refresh_token", "refresh_token" -> rt)().flatMap(json[Json])
+      at2   = nt.hcursor.get[String]("access_token").getOrElse(fail(nt.noSpaces))
+      rt2   = nt.hcursor.get[String]("refresh_token").getOrElse(fail(nt.noSpaces))
+      _     = assertEquals(nt.hcursor.get[String]("scope").toOption, Some("read write"))
+      old  <- bearer(at, Method.GET, "/api/me")
+      _     = assertEquals(old.status, Status.Unauthorized)
+      reuse <- tokenReq("grant_type" -> "refresh_token", "refresh_token" -> rt)()
+      _     = assertEquals(reuse.status, Status.BadRequest)
+      // 別のクライアントは、ほかのクライアントの refresh token を使えない
+      other <- tokenReq("grant_type" -> "refresh_token", "refresh_token" -> rt2)(client = "reader", secret = "reader-test-secret-0123456789")
+      _     = assertEquals(other.status, Status.BadRequest)
+      ok2  <- bearer(at2, Method.GET, "/api/me")
+      _     = assertEquals(ok2.status, Status.Ok)
+      // 設定の画面: 連携として出て、取り消すと使えなくなる（refresh token も）
+      list <- call(a, Method.GET, "/api/tokens").flatMap(json[List[ApiTokenDto]])
+      link  = list.find(_.oauthClient.contains("skakapo")).getOrElse(fail(list.toString))
+      _     = assertEquals((link.name, link.scope, list.size), ("skakapo 連携", TokenScope.Write, 1))
+      del  <- call(a, Method.DELETE, s"/api/tokens/${link.id}")
+      _     = assertEquals(del.status, Status.NoContent)
+      gone <- bearer(at2, Method.GET, "/api/me")
+      _     = assertEquals(gone.status, Status.Unauthorized)
+      dead <- tokenReq("grant_type" -> "refresh_token", "refresh_token" -> rt2)()
+      _     = assertEquals(dead.status, Status.BadRequest)
+    yield ()
+  }
+
+  test("OAuth: read だけのトークンでは書き込みを拒む（REST API も MCP も）. 許可し直すと前のトークンは失効する. revoke で失効させられる") {
+    for
+      a    <- login("中村 六子", "nakamura@example.com")
+      tok  <- grant(a, "read")
+      at    = tok.hcursor.get[String]("access_token").getOrElse(fail(tok.noSpaces))
+      _     = assertEquals(tok.hcursor.get[String]("scope").toOption, Some("read"))
+      cals <- bearer(at, Method.GET, "/api/calendars").flatMap(json[List[CalendarDto]])
+      cal   = cals.find(_.primary).getOrElse(fail("no primary"))
+      req   = EventReq(cal.id, "書けない", "", "", false, "2026-12-01T01:00:00Z", "2026-12-01T02:00:00Z", "Asia/Tokyo", None, None, Nil, Nil, None)
+      w    <- bearer(at, Method.POST, "/api/events", Some(req.asJson))
+      _     = assertEquals(w.status, Status.Forbidden)
+      (m, isErr) <- mcp(at, "create_event", Json.obj("title" -> "書けない".asJson, "start" -> "2026-12-03T10:00".asJson, "end" -> "2026-12-03T11:00".asJson))
+      _     = assert(isErr && m.contains("参照のみ"), m)
+      (l, lErr) <- mcp(at, "list_calendars", Json.obj())
+      _     = assert(!lErr, l)
+      // 許可し直すと、前のトークンは失効する
+      tok2 <- grant(a, "read write")
+      at2   = tok2.hcursor.get[String]("access_token").getOrElse(fail(tok2.noSpaces))
+      old  <- bearer(at, Method.GET, "/api/me")
+      _     = assertEquals(old.status, Status.Unauthorized)
+      rv   <- fixture()._2.run(Request[IO](Method.POST, uri"/oauth/revoke").withEntity(UrlForm("token" -> at2))
+                .putHeaders(org.http4s.headers.Authorization(BasicCredentials("skakapo", "skakapo-test-secret-0123456789"))))
+      _     = assertEquals(rv.status, Status.Ok)
+      gone <- bearer(at2, Method.GET, "/api/me")
+      _     = assertEquals(gone.status, Status.Unauthorized)
+    yield ()
+  }

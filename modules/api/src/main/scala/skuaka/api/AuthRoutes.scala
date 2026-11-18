@@ -30,7 +30,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, calendars: Ca
     calendars.ensurePrimary(u) *> sessions.issue(u, idToken) <* skuaka.observe.Metrics.count("skuaka.logins", "via" -> idToken.fold("dev")(_ => "oidc"))
 
   private def page(title: String, msg: String, status: Status): IO[Response[IO]] =
-    val esc = (s: String) => s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+    val esc = Html.escape
     IO.pure(TextResponse(status,
       s"""<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(title)}</title>
          |<body style="font-family:system-ui,sans-serif;max-width:480px;margin:12vh auto;padding:0 1rem">

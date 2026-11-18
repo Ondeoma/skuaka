@@ -218,7 +218,7 @@ object EditScope {
   val Following = "following"
 }
 
-/** API トークン. scope は read（参照だけ）か write（変更も）. 日時は UTC の ISO 8601. */
+/** API トークン. scope は read（参照だけ）か write（変更も）. 日時は UTC の ISO 8601. oauthClient は連携（OAuth の認可）で発行したときのクライアント. */
 object TokenScope {
   val Read = "read"
   val Write = "write"
@@ -227,7 +227,7 @@ object TokenScope {
 }
 
 final case class ApiTokenDto(id: UUID, name: String, prefix: String, scope: String, createdAt: String, expiresAt: Option[String],
-                             lastUsedAt: Option[String]) derives Encoder.AsObject, Decoder
+                             lastUsedAt: Option[String], oauthClient: Option[String] = None) derives Encoder.AsObject, Decoder
 
 final case class ApiTokenReq(name: String, scope: String, expiresInDays: Option[Int]) derives Encoder.AsObject, Decoder
 
