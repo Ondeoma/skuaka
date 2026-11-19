@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import scalaJS from './vite-scalajs.js'
 
-const backend = process.env.BACKEND ?? 'http://localhost:8095'
+const backend = process.env.BACKEND ?? 'http://localhost:8105'
 
 export default defineConfig({
   // 画面(Scalactive)は sbt の web プロジェクトから読み込む

@@ -58,8 +58,8 @@ Scala.js + [Scalactive](https://github.com/Ondeoma/scalactive)、Vite。設計�
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --wait   # PostgreSQL（:54349。テスト用の DB skuaka_test も作る）
-scripts/dev-restart.sh                                   # バックエンドを :8095 で起動（DEV_LOGIN=true。名前だけでログインできる）
-(cd frontend && npm install && npm run dev)              # 画面の開発サーバー http://localhost:5175（/api・/auth・/ics は :8095 へ中継）
+scripts/dev-restart.sh                                   # バックエンドを :8105 で起動（DEV_LOGIN=true。名前だけでログインできる）
+(cd frontend && npm install && npm run dev)              # 画面の開発サーバー http://localhost:5175（/api・/auth・/ics は :8105 へ中継）
 sbt ~web/fastLinkJS                                      # 画面の変更を再リンクし続ける（ブラウザを再読み込みすると反映）
 ```
 
