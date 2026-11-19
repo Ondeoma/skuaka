@@ -15,27 +15,25 @@ import java.util.UUID
 import scala.util.Try
 
 /** 確認済みの予定の入力. */
-final case class EventInput(
-  calendarId: UUID,
-  title: String,
-  description: String,
-  location: String,
-  span: Span,
-  zone: ZoneId,
-  color: Option[String],
-  recurrence: Option[Recurrence],
-  attendees: List[UUID],
-  reminders: List[Int],
-  version: Option[Int])
+final case class EventInput(calendarId: UUID,
+                            title: String,
+                            description: String,
+                            location: String,
+                            span: Span,
+                            zone: ZoneId,
+                            color: Option[String],
+                            recurrence: Option[Recurrence],
+                            attendees: List[UUID],
+                            reminders: List[Int],
+                            version: Option[Int])
 
 /** 予定の一覧（繰り返しの展開）・作成・変更・削除・招待への返事・検索. */
-final class EventRoutes(
-  events: EventStore,
-  calendars: CalendarStore,
-  users: UserStore,
-  val sessions: SessionAuth,
-  skaka: Option[SkakaService] = None,
-  notifier: Option[EventNotifier] = None)
+final class EventRoutes(events: EventStore,
+                        calendars: CalendarStore,
+                        users: UserStore,
+                        val sessions: SessionAuth,
+                        skaka: Option[SkakaService] = None,
+                        notifier: Option[EventNotifier] = None)
   extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -54,43 +52,25 @@ final class EventRoutes(
   }
 
   // 期間の予定（繰り返しは展開して1回ずつ）. from・to は表示のタイムゾーンでの日付（to は含まない）
-  private def getEvents(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getEvents(req: Request[IO]): IO[Response[IO]] =
     authed(req) { u =>
       val view = zoneOf(req, u)
-      period(req, view)(
-        (
-          from,
-          to
-        ) => events.window(u.id, from, to).flatMap(vs => Ok(expand(vs, from, to, view)))
-      )
+      period(req, view)((from, to) => events.window(u.id, from, to).flatMap(vs => Ok(expand(vs, from, to, view))))
     }
 
   // 公開リンク（ログインしない人）: カレンダー・期間の予定・予定の詳細. tz は表示のタイムゾーン（既定 Asia/Tokyo）
-  private def getPublicCalendar(
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicCalendar(token: String): IO[Response[IO]] =
     publicCal(token)(Ok(_))
 
-  private def getPublicEvents(
-    req: Request[IO],
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicEvents(req: Request[IO], token: String): IO[Response[IO]] =
     publicCal(token) { c =>
       val view = param(req, "tz").flatMap(Time.zone).getOrElse(ZoneId.of("Asia/Tokyo"))
-      period(req, view)(
-        (
-          from,
-          to
-        ) => events.calendarWindow(c.id, from, to).flatMap(rs => Ok(expand(rs.map(asPublic(c, _)), from, to, view)))
+      period(req, view)((from, to) =>
+        events.calendarWindow(c.id, from, to).flatMap(rs => Ok(expand(rs.map(asPublic(c, _)), from, to, view)))
       )
     }
 
-  private def getPublicEvent(
-    id: UUID,
-    token: String
-  ): IO[Response[IO]] =
+  private def getPublicEvent(id: UUID, token: String): IO[Response[IO]] =
     publicCal(token) { c =>
       events.get(id).flatMap {
         case Some(r) if r.calendarId == c.id => Ok(eventDtoOf(asPublic(c, r), Nil, c.owner))
@@ -99,9 +79,7 @@ final class EventRoutes(
     }
 
   // 探す（繰り返しの予定は、これから先の最初の回. なければ最初の回）
-  private def getEventsSearch(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getEventsSearch(req: Request[IO]): IO[Response[IO]] =
     authed(req) { u =>
       val view = zoneOf(req, u)
       val now = Instant.now()
@@ -127,10 +105,7 @@ final class EventRoutes(
       }
     }
 
-  private def getEvent(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def getEvent(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(u =>
       events.visibleOne(u.id, id).flatMap {
         case Some(v) => eventDto(v).flatMap(Ok(_))
@@ -138,9 +113,7 @@ final class EventRoutes(
       }
     )
 
-  private def postEvents(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postEvents(req: Request[IO]): IO[Response[IO]] =
     authed(req) { u =>
       body[EventReq](req)(r =>
         valid(check(r)) { in =>
@@ -165,10 +138,7 @@ final class EventRoutes(
     }
 
   // 変更. 繰り返しの予定は scope（this: この予定だけ / following: これ以降 / all: すべて）と occurrence（その回の元の開始）を付ける
-  private def putEvent(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def putEvent(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req) { u =>
       body[EventReq](req)(r =>
         valid(check(r)) { in =>
@@ -183,9 +153,8 @@ final class EventRoutes(
               )(events.attendees(m.id).flatMap { before =>
                 // 前からのゲストには知らせない（新しく加えた人だけ）
                 val added = guests.filterNot(before.map(_.user.id).toSet)
-                def done(
-                  target: UUID
-                ) = Metrics.count("skuaka.events.updated", "scope" -> scopeOf(req, m)) *> invite(u, target, added)
+                def done(target: UUID) = Metrics.count("skuaka.events.updated", "scope" -> scopeOf(req, m)) *>
+                  invite(u, target, added)
                 cut(req, m) match {
                   case Some(rest) =>
                     // 切った回から新しい予定にする（「この予定」は1回だけ）
@@ -216,10 +185,7 @@ final class EventRoutes(
       )
     }
 
-  private def deleteEvent(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteEvent(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req) { u =>
       editable(u, id)(v =>
         Telemetry.span("event.delete", "event.id" -> id.toString, "scope" -> scopeOf(req, v.row))(
@@ -230,10 +196,7 @@ final class EventRoutes(
     }
 
   // 招待への返事
-  private def postEventRsvp(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postEventRsvp(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req) { u =>
       body[RsvpReq](req) { r =>
         if !Rsvp.all.contains(r.response) then err(ErrorCode.RsvpResponseInvalid)
@@ -250,20 +213,12 @@ final class EventRoutes(
     }
 
   // 招待された予定を自分のカレンダーから外す
-  private def deleteEventRsvp(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteEventRsvp(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(u => events.leave(id, u.id) *> NoContent())
 
-  private def canEdit(
-    role: Option[String]
-  ): Boolean = role.exists(r => CalRole.rank(r) >= CalRole.rank(CalRole.Edit))
+  private def canEdit(role: Option[String]): Boolean = role.exists(r => CalRole.rank(r) >= CalRole.rank(CalRole.Edit))
 
-  private def occurrence(
-    v: VisibleEvent,
-    o: Span
-  ): OccurrenceDto = {
+  private def occurrence(v: VisibleEvent, o: Span): OccurrenceDto = {
     val r = v.row
     OccurrenceDto(
       r.id,
@@ -285,15 +240,10 @@ final class EventRoutes(
     )
   }
 
-  private def eventDto(
-    v: VisibleEvent
-  ): IO[EventDto] = {
+  private def eventDto(v: VisibleEvent): IO[EventDto] = {
     val r = v.row
     (if v.busy then IO.pure(Nil) else events.attendees(r.id), r.organizerId.flatTraverse(users.find)).mapN {
-      (
-        as,
-        org
-      ) =>
+      (as, org) =>
         eventDtoOf(
           v,
           as,
@@ -303,11 +253,7 @@ final class EventRoutes(
   }
 
   /** 予定あり・なしのみの予定は、繰り返しの決まりも伏せる. */
-  private def eventDtoOf(
-    v: VisibleEvent,
-    attendees: List[AttendeeDto],
-    organizer: UserBrief
-  ): EventDto = {
+  private def eventDtoOf(v: VisibleEvent, attendees: List[AttendeeDto], organizer: UserBrief): EventDto = {
     val r = v.row
     EventDto(
       r.id,
@@ -332,12 +278,7 @@ final class EventRoutes(
   }
 
   /** 予定を [from, to) の回に展開して、日時の順に. */
-  private def expand(
-    vs: List[VisibleEvent],
-    from: Instant,
-    to: Instant,
-    view: ZoneId
-  ): List[OccurrenceDto] =
+  private def expand(vs: List[VisibleEvent], from: Instant, to: Instant, view: ZoneId): List[OccurrenceDto] =
     vs.flatMap(v =>
       Expand.occurrences(v.row.span, v.row.zone, v.row.recurrence, v.row.exdates.toSet, from, to, view).map(occurrence(
         v,
@@ -347,12 +288,7 @@ final class EventRoutes(
       .sortBy(o => (o.start, o.end))
 
   /** 表示の期間（from・to は表示のタイムゾーンでの日付. to は含まない. 400日まで）. */
-  private def period(
-    req: Request[IO],
-    view: ZoneId
-  )(
-    f: (Instant, Instant) => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def period(req: Request[IO], view: ZoneId)(f: (Instant, Instant) => IO[Response[IO]]): IO[Response[IO]] =
     (date(param(req, "from")), date(param(req, "to"))) match {
       case (Some(a), Some(b)) if b.isAfter(a) && ChronoUnit.DAYS.between(a, b) <= 400 =>
         f(a.atStartOfDay(view).toInstant, b.atStartOfDay(view).toInstant)
@@ -360,24 +296,13 @@ final class EventRoutes(
     }
 
   /** 公開リンクのカレンダー（なければ 404）. */
-  private def publicCal(
-    token: String
-  )(
-    f: PublicCalendarDto => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def publicCal(token: String)(f: PublicCalendarDto => IO[Response[IO]]): IO[Response[IO]] =
     calendars.byPublicToken(token).flatMap(_.fold(err(ErrorCode.PublicCalendarNotFound))(f))
 
   /** 公開リンクで見る予定（権限は公開の範囲. ゲストは返さない）. */
-  private def asPublic(
-    c: PublicCalendarDto,
-    r: EventRow
-  ): VisibleEvent = VisibleEvent.of(r, Some(c.access), None, 0)
+  private def asPublic(c: PublicCalendarDto, r: EventRow): VisibleEvent = VisibleEvent.of(r, Some(c.access), None, 0)
 
-  private def respondEvent(
-    u: User,
-    id: UUID,
-    meetingError: Option[String] = None
-  ): IO[Response[IO]] =
+  private def respondEvent(u: User, id: UUID, meetingError: Option[String] = None): IO[Response[IO]] =
     events.visibleOne(u.id, id).flatMap {
       case Some(v) => eventDto(v).flatMap(e => Ok(e.copy(meetingError = meetingError)))
       case None => NoContent()
@@ -386,20 +311,14 @@ final class EventRoutes(
   // ---------------------------------------------------------------- Web 会議（skaka）
 
   /** 予定の場所にある会議室のコード. */
-  private def meetingCode(
-    r: EventRow
-  ): Option[String] = skaka.flatMap(s => Meeting.find(r.location, s.cfg.url).map(_._2))
+  private def meetingCode(r: EventRow): Option[String] =
+    skaka.flatMap(s => Meeting.find(r.location, s.cfg.url).map(_._2))
 
-  private def skakaEvent(
-    r: EventRow
-  ): SkakaEvent = SkakaEvent(r.id, r.title, r.span.startText, r.span.endText, r.allDay)
+  private def skakaEvent(r: EventRow): SkakaEvent =
+    SkakaEvent(r.id, r.title, r.span.startText, r.span.endText, r.allDay)
 
   /** 頼まれていれば、会議室を作って場所に URL を入れる（付け済みなら何もしない）. 失敗したら理由（予定は保存したまま）. */
-  private def attachMeeting(
-    u: User,
-    id: UUID,
-    wanted: Option[Boolean]
-  ): IO[Option[String]] =
+  private def attachMeeting(u: User, id: UUID, wanted: Option[Boolean]): IO[Option[String]] =
     if !wanted.contains(true) then IO.pure(None)
     else
       skaka match {
@@ -417,10 +336,7 @@ final class EventRoutes(
       }
 
   /** タイトル・日時が変わったら、会議室に結び付けた予定の写しを変える（失敗しても保存は止めない）. */
-  private def syncMeeting(
-    u: User,
-    before: EventRow
-  ): IO[Unit] =
+  private def syncMeeting(u: User, before: EventRow): IO[Unit] =
     skaka.traverse_ { s =>
       events.get(before.id).flatMap(_.traverse_ { r =>
         meetingCode(r).traverse_(code =>
@@ -430,24 +346,15 @@ final class EventRoutes(
     }.handleError(_ => ())
 
   /** 新しく招待した人を数え、プッシュ通知で知らせる（裏で. 保存の応答は待たせない）. */
-  private def invite(
-    u: User,
-    id: UUID,
-    guests: List[UUID]
-  ): IO[Unit] =
+  private def invite(u: User, id: UUID, guests: List[UUID]): IO[Unit] =
     IO.whenA(guests.nonEmpty)(Metrics.add("skuaka.invitations.sent", guests.size.toLong) *>
       notifier.traverse_(_.invited(u, id, guests).start.void))
 
   /** 変更・削除の範囲（メトリクスの属性）. */
-  private def scopeOf(
-    req: Request[IO],
-    m: EventRow
-  ): String =
+  private def scopeOf(req: Request[IO], m: EventRow): String =
     if m.recurrence.isEmpty then "single" else param(req, "scope").getOrElse(EditScope.All)
 
-  private def check(
-    r: EventReq
-  ): Either[String, EventInput] =
+  private def check(r: EventReq): Either[String, EventInput] =
     for {
       title <- Check.text(Option(r.title.trim).filter(_.nonEmpty).getOrElse("（タイトルなし）"), "タイトル", 300)
       desc <- Check.text(r.description, "説明", 10000)
@@ -465,13 +372,7 @@ final class EventRoutes(
       _ <- Either.cond(r.attendees.size <= 200, (), "ゲストは200人までにしてください")
     } yield EventInput(r.calendarId, title, desc, loc, span, zone, color, rec, r.attendees.distinct, rem, r.version)
 
-  private def row(
-    id: UUID,
-    organizer: Option[UUID],
-    in: EventInput,
-    exdates: List[String],
-    version: Int
-  ): EventRow = {
+  private def row(id: UUID, organizer: Option[UUID], in: EventInput, exdates: List[String], version: Int): EventRow = {
     val (sa, ea, sd, ed) = in.span match {
       case Span.Timed(s, e) => (Some(s), Some(e), None, None)
       case Span.AllDay(s, e) => (None, None, Some(s), Some(e))
@@ -499,12 +400,7 @@ final class EventRoutes(
   }
 
   /** 予定を書き込めるカレンダーか. */
-  private def writable(
-    u: User,
-    calendarId: UUID
-  )(
-    f: => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def writable(u: User, calendarId: UUID)(f: => IO[Response[IO]]): IO[Response[IO]] =
     calendars.get(u.id, calendarId).flatMap {
       case Some(c) if c.writable => f
       case Some(c) if c.subscribed => err(ErrorCode.EventInSubscribedCalendar)
@@ -512,12 +408,7 @@ final class EventRoutes(
     }
 
   /** 変更・削除できる予定か. */
-  private def editable(
-    u: User,
-    id: UUID
-  )(
-    f: VisibleEvent => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def editable(u: User, id: UUID)(f: VisibleEvent => IO[Response[IO]]): IO[Response[IO]] =
     events.visibleOne(u.id, id).flatMap {
       case None => err(ErrorCode.EventNotFound)
       case Some(v) if !canEdit(v.role) => err(ErrorCode.EventNotEditable)
@@ -528,11 +419,7 @@ final class EventRoutes(
    * 「すべての予定」の変更で、ある回を動かしたとき: 繰り返しの最初の回を同じ日数だけずらし、時刻・長さは入力に合わせる.
    * （3回目を1日後ろへドラッグしたら、繰り返し全体が1日後ろへずれる）
    */
-  private def rebase(
-    m: EventRow,
-    key: String,
-    in: EventInput
-  ): Span =
+  private def rebase(m: EventRow, key: String, in: EventInput): Span =
     Expand.keyDate(m.span, m.zone, key).fold(in.span) { occ =>
       val target =
         Expand.startDate(m.span, m.zone).plusDays(ChronoUnit.DAYS.between(occ, Expand.startDate(in.span, in.zone)))
@@ -543,10 +430,7 @@ final class EventRoutes(
    * 繰り返しの予定を、指定した回のところで切る（「この予定」はその回を除き、「これ以降」はその前の日で繰り返しを終える）.
    * 切った後の元の予定を返す（「すべて」・繰り返しでない予定・最初の回からの「これ以降」は None. 予定そのものを扱う）.
    */
-  private def cut(
-    req: Request[IO],
-    m: EventRow
-  ): Option[EventRow] =
+  private def cut(req: Request[IO], m: EventRow): Option[EventRow] =
     (m.recurrence, param(req, "scope").getOrElse(EditScope.All), param(req, "occurrence")) match {
       case (Some(_), EditScope.This, Some(k)) => Some(m.copy(exdates = (m.exdates :+ k).distinct))
       case (Some(rule), EditScope.Following, Some(k)) if k != m.span.key =>
@@ -554,14 +438,9 @@ final class EventRoutes(
       case _ => None
     }
 
-  private def zoneOf(
-    req: Request[IO],
-    u: User
-  ): ZoneId =
+  private def zoneOf(req: Request[IO], u: User): ZoneId =
     param(req, "tz").flatMap(Time.zone).orElse(Time.zone(u.timezone)).getOrElse(ZoneId.of("Asia/Tokyo"))
 
-  private def date(
-    s: Option[String]
-  ): Option[LocalDate] = s.flatMap(x => Try(LocalDate.parse(x)).toOption)
+  private def date(s: Option[String]): Option[LocalDate] = s.flatMap(x => Try(LocalDate.parse(x)).toOption)
 
 }

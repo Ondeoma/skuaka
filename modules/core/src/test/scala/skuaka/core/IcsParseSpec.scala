@@ -7,10 +7,7 @@ import java.time.*
 class IcsParseSpec extends munit.FunSuite {
 
   private val tokyo = ZoneId.of("Asia/Tokyo")
-  private def at(
-    s: String,
-    z: ZoneId = tokyo
-  ) = LocalDateTime.parse(s).atZone(z).toInstant
+  private def at(s: String, z: ZoneId = tokyo) = LocalDateTime.parse(s).atZone(z).toInstant
 
   /** Google カレンダーが書き出すものに近い iCalendar. */
   private val google = List(
@@ -100,9 +97,8 @@ class IcsParseSpec extends munit.FunSuite {
   ).mkString("\r\n")
 
   private lazy val parsed = IcsParse.parse(google, ZoneOffset.UTC).fold(fail(_), identity)
-  private def ev(
-    uid: String
-  ) = parsed.events.find(_.uid == uid).getOrElse(fail(s"$uid がない: ${parsed.events.map(_.uid)}"))
+  private def ev(uid: String) =
+    parsed.events.find(_.uid == uid).getOrElse(fail(s"$uid がない: ${parsed.events.map(_.uid)}"))
 
   test("カレンダーの名前と、読み取れなかった予定の数") {
     assertEquals(parsed.name, Some("仕事"))

@@ -17,13 +17,12 @@ import java.time.Instant
 import java.util.UUID
 
 /** ログイン（OIDC・開発用）・ログアウト・自分の情報とアイコン・ユーザーの検索. */
-final class AuthRoutes(
-  oidc: Option[OidcClient],
-  users: UserStore,
-  calendars: CalendarStore,
-  val sessions: SessionAuth,
-  cfg: ApiConfig,
-  skakaUrl: Option[String] = None)
+final class AuthRoutes(oidc: Option[OidcClient],
+                       users: UserStore,
+                       calendars: CalendarStore,
+                       val sessions: SessionAuth,
+                       cfg: ApiConfig,
+                       skakaUrl: Option[String] = None)
   extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -43,9 +42,7 @@ final class AuthRoutes(
     case req @ DELETE -> Root / "api" / "tokens" / UuidVar(id) => deleteToken(req, id)
   }
 
-  private def getAuthLogin(
-    req: Request[IO]
-  ): IO[Response[IO]] = {
+  private def getAuthLogin(req: Request[IO]): IO[Response[IO]] = {
     val back = SafePath.of(param(req, "returnTo"))
     oidc match {
       case Some(o) =>
@@ -58,9 +55,7 @@ final class AuthRoutes(
   }
 
   // IdP から戻ってきたところ（認可コードを ID トークンに交換して、署名・iss・aud・exp・nonce を確かめる）
-  private def getAuthCallback(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getAuthCallback(req: Request[IO]): IO[Response[IO]] =
     (oidc, param(req, "code"), param(req, "state"), param(req, "error")) match {
       case (_, _, _, Some(e)) =>
         page(
@@ -96,23 +91,16 @@ final class AuthRoutes(
     }
 
   // ログアウト: セッションを消し、IdP にもログアウトを頼む（end_session_endpoint があれば）
-  private def postAuthLogout(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAuthLogout(req: Request[IO]): IO[Response[IO]] =
     sessions.revoke(req).flatMap {
-      (
-        idToken,
-        c
-      ) =>
+      (idToken, c) =>
         oidc.traverse(_.logoutUri(idToken, cfg.publicUrl + "/")).map(_.flatten).flatMap { idp =>
           Ok(Json.obj("redirect" -> idp.fold("/login?loggedOut=1")(_.renderString).asJson)).map(_.addCookie(c))
         }
     }
 
   // 開発用: 名前だけでログインする（DEV_LOGIN=true で OIDC を設定していないときだけ）
-  private def postAuthDevLogin(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAuthDevLogin(req: Request[IO]): IO[Response[IO]] =
     body[Json](req) { j =>
       val c = j.hcursor
       val name = c.get[String]("name").getOrElse("").trim
@@ -133,14 +121,10 @@ final class AuthRoutes(
   private def getClientConfig(): IO[Response[IO]] =
     Ok(ClientConfigDto(cfg.devLogin && oidc.isEmpty, oidc.isDefined, cfg.version, skakaUrl))
 
-  private def getMe(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getMe(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u => sessions.appNames(req).flatMap(n => Ok(u.me.copy(appNames = n))))
 
-  private def patchMe(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def patchMe(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u =>
       body[UpdateMeReq](req) { r =>
         val tz = r.timezone.map(_.trim).filter(_.nonEmpty)
@@ -151,9 +135,7 @@ final class AuthRoutes(
     )
 
   // アイコン: 画像そのもの（PNG・JPEG・GIF・WebP、1MB まで）を本文にして送る. 消すと IdP の画像に戻る
-  private def putMeAvatar(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def putMeAvatar(req: Request[IO]): IO[Response[IO]] =
     authed(req) { u =>
       req.body.take(AvatarImage.MaxBytes + 1L).compile.to(Array).flatMap { data =>
         if data.length > AvatarImage.MaxBytes then err(ErrorCode.AvatarTooLarge)
@@ -164,16 +146,11 @@ final class AuthRoutes(
       }
     }
 
-  private def deleteMeAvatar(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def deleteMeAvatar(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u => users.deleteAvatar(u.id) *> me(u))
 
   // URL の v（版）が変われば別の画像なので、長くキャッシュしてよい
-  private def getUserAvatar(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def getUserAvatar(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req) { _ =>
       users.avatar(id).flatMap {
         case None => err(ErrorCode.AvatarNotFound)
@@ -188,20 +165,14 @@ final class AuthRoutes(
       }
     }
 
-  private def getUsers(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getUsers(req: Request[IO]): IO[Response[IO]] =
     authed(req)(_ => users.search(param(req, "q").getOrElse(""), 20).flatMap(Ok(_)))
 
   // ------------------------------------------------------------ API トークン（画面からだけ管理できる）
-  private def getTokens(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getTokens(req: Request[IO]): IO[Response[IO]] =
     interactive(req)(u => users.tokens(u.id).flatMap(Ok(_)))
 
-  private def postTokens(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postTokens(req: Request[IO]): IO[Response[IO]] =
     interactive(req)(u =>
       body[ApiTokenReq](req) { r =>
         val name = r.name.trim
@@ -223,38 +194,23 @@ final class AuthRoutes(
       }
     )
 
-  private def deleteToken(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteToken(req: Request[IO], id: UUID): IO[Response[IO]] =
     interactive(req)(u => users.revokeToken(u.id, id).ifM(NoContent(), err(ErrorCode.ApiTokenNotFound)))
 
-  private def redirect(
-    to: String,
-    cookie: Option[ResponseCookie] = None
-  ): IO[Response[IO]] = {
+  private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] = {
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)), "Cache-Control" -> "no-store")
     IO.pure(cookie.fold(r)(r.addCookie))
   }
 
   /** 変更した後の自分の情報. */
-  private def me(
-    u: User
-  ): IO[Response[IO]] = users.find(u.id).flatMap(x => Ok(x.getOrElse(u).me))
+  private def me(u: User): IO[Response[IO]] = users.find(u.id).flatMap(x => Ok(x.getOrElse(u).me))
 
   /** ログインした人のカレンダーを用意してから、セッションを発行する. */
-  private def loggedIn(
-    u: User,
-    idToken: Option[String]
-  ): IO[ResponseCookie] =
+  private def loggedIn(u: User, idToken: Option[String]): IO[ResponseCookie] =
     calendars.ensurePrimary(u) *> sessions.issue(u, idToken) <*
       sbirds.observe.Metrics.count("skuaka.logins", "via" -> idToken.fold("dev")(_ => "oidc"))
 
-  private def page(
-    title: String,
-    msg: String,
-    status: Status
-  ): IO[Response[IO]] = {
+  private def page(title: String, msg: String, status: Status): IO[Response[IO]] = {
     val esc = Html.escape
     IO.pure(TextResponse(
       status,

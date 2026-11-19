@@ -10,32 +10,28 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 import scala.util.{Failure, Success}
 
-final case class Toast(
-  id: Int,
-  text: String,
-  error: Boolean)
+final case class Toast(id: Int, text: String, error: Boolean)
 
 /** 編集中の予定（作成・変更の画面の入力）. occurrence は繰り返しのどの回を開いたか. */
-final case class Draft(
-  id: Option[UUID],
-  occurrence: Option[String],
-  wasRecurring: Boolean,
-  calendarId: UUID,
-  title: String,
-  description: String,
-  location: String,
-  allDay: Boolean,
-  startDate: String,
-  startTime: String,
-  endDate: String,
-  endTime: String,
-  timezone: String,
-  color: Option[String],
-  recurrence: Option[Recurrence],
-  attendees: List[UserBrief],
-  reminders: List[Int],
-  version: Option[Int],
-  withMeeting: Boolean = false) {
+final case class Draft(id: Option[UUID],
+                       occurrence: Option[String],
+                       wasRecurring: Boolean,
+                       calendarId: UUID,
+                       title: String,
+                       description: String,
+                       location: String,
+                       allDay: Boolean,
+                       startDate: String,
+                       startTime: String,
+                       endDate: String,
+                       endTime: String,
+                       timezone: String,
+                       color: Option[String],
+                       recurrence: Option[Recurrence],
+                       attendees: List[UserBrief],
+                       reminders: List[Int],
+                       version: Option[Int],
+                       withMeeting: Boolean = false) {
 
   def toReq: EventReq = {
     val (s, e) =
@@ -100,43 +96,28 @@ object Store {
 
   private var toastSeq = 0
 
-  def toast(
-    text: String,
-    error: Boolean = false
-  ): Unit = {
+  def toast(text: String, error: Boolean = false): Unit = {
     toastSeq += 1
     val t = Toast(toastSeq, text, error)
     toasts := (toasts.v :+ t).takeRight(4)
     dom.window.setTimeout(() => dismiss(t.id), if (error) 9000 else 5000)
   }
 
-  def dismiss(
-    id: Int
-  ): Unit = toasts := toasts.v.filterNot(_.id == id)
+  def dismiss(id: Int): Unit = toasts := toasts.v.filterNot(_.id == id)
 
-  def error(
-    e: Throwable
-  ): Unit = e match {
+  def error(e: Throwable): Unit = e match {
     case ApiError(401, _) => ()
     case other => toast(other.getMessage, error = true)
   }
 
   /** Future の失敗をトーストで知らせる. */
-  def report[A](
-    f: Future[A]
-  )(
-    ok: A => Unit
-  ): Unit = f.onComplete {
+  def report[A](f: Future[A])(ok: A => Unit): Unit = f.onComplete {
     case Success(a) => ok(a)
     case Failure(e) => error(e)
   }
 
   /** 失敗したらトーストで知らせてから failed（先に画面を変えておく操作の取り消し）. */
-  def orUndo[A](
-    f: Future[A]
-  )(
-    failed: => Unit
-  ): Unit = f.onComplete {
+  def orUndo[A](f: Future[A])(failed: => Unit): Unit = f.onComplete {
     case Failure(e) => error(e); failed
     case _ => ()
   }
@@ -144,23 +125,16 @@ object Store {
   // ---------------------------------------------------------------- 表示の範囲
 
   /** 週の表示の日（土日を隠す設定なら平日だけ）. */
-  def weekDays(
-    d: String
-  ): List[String] = {
+  def weekDays(d: String): List[String] = {
     val all = Cal.range(Cal.weekStart(d, weekStart.v), 7)
     if (weekends.v) all else all.filter(x => Cal.dow(x) != 0 && Cal.dow(x) != 6)
   }
 
   /** 月の表示の日（6週間分）. */
-  def monthDays(
-    d: String
-  ): List[String] = Cal.range(Cal.weekStart(Cal.monthStart(d), weekStart.v), 42)
+  def monthDays(d: String): List[String] = Cal.range(Cal.weekStart(Cal.monthStart(d), weekStart.v), 42)
 
   /** 読み込む期間 [from, to). */
-  def range(
-    v: String,
-    d: String
-  ): (String, String) = v match {
+  def range(v: String, d: String): (String, String) = v match {
     case "day" => (d, Cal.addDays(d, 1))
     case "month" => { val ds = monthDays(d); (ds.head, Cal.addDays(ds.last, 1)) }
     case "agenda" => (d, Cal.addDays(d, 31))
@@ -168,9 +142,7 @@ object Store {
   }
 
   /** 前・次へ（表示の種類の単位で）. */
-  def step(
-    n: Int
-  ): Unit = date :=
+  def step(n: Int): Unit = date :=
     (view.v match {
       case "day" => Cal.addDays(date.v, n)
       case "month" => Cal.addMonths(date.v, n)
@@ -178,25 +150,16 @@ object Store {
       case _ => Cal.addDays(date.v, 7 * n)
     })
 
-  def setView(
-    v: String
-  ): Unit = { view := v; Prefs.set("view", v) }
+  def setView(v: String): Unit = { view := v; Prefs.set("view", v) }
 
   /** カレンダーの画面のパス（公開リンクで見ているときはそのページ）. */
-  def home: String = guest.v.fold("/")(
-    (
-      t,
-      _
-    ) => s"/p/$t"
-  )
+  def home: String = guest.v.fold("/")((t, _) => s"/p/$t")
 
   /** カレンダーの画面へ（ほかの画面にいるとき）. */
   def goHome(): Unit = if (dom.window.location.pathname != home) Router.go(home)
 
   /** その日を日の表示で開く. */
-  def openDay(
-    d: String
-  ): Unit = { date := d; setView("day"); goHome() }
+  def openDay(d: String): Unit = { date := d; setView("day"); goHome() }
 
   /** ヘッダーの「2026年 11月」. */
   def title: CRV[String] = computed {
@@ -231,12 +194,7 @@ object Store {
     val seq = loadSeq
     val (f, t) = range(view.v, date.v)
     loading := true
-    guest.v.fold(Api.events(f, t))(
-      (
-        tk,
-        _
-      ) => Api.publicEvents(tk, f, t)
-    ).onComplete { r =>
+    guest.v.fold(Api.events(f, t))((tk, _) => Api.publicEvents(tk, f, t)).onComplete { r =>
       if (seq == loadSeq) {
         loading := false
         r match {
@@ -252,14 +210,11 @@ object Store {
   def loadSkaka(): Future[Unit] = Api.skakaStatus().map(st => skaka := Option.when(st.enabled)(st))
 
   /** 場所にある Web 会議（skaka）の会議室の URL. */
-  def meetingUrl(
-    location: String
-  ): Option[String] = config.v.flatMap(_.skakaUrl).flatMap(Meeting.find(location, _)).map(_._1)
+  def meetingUrl(location: String): Option[String] =
+    config.v.flatMap(_.skakaUrl).flatMap(Meeting.find(location, _)).map(_._1)
 
   /** 公開リンクで開く（カレンダーは公開されたものだけ. 色・名前の表示に使う）. */
-  def openGuest(
-    token: String
-  ): Future[Unit] = Api.publicCalendar(token).map { c =>
+  def openGuest(token: String): Future[Unit] = Api.publicCalendar(token).map { c =>
     guest := Some(token -> c)
     calendars := List(CalendarDto(
       c.id,
@@ -278,26 +233,15 @@ object Store {
   }
 
   /** 予定の詳細（公開リンクで見ているときは公開の範囲で）. */
-  def fetchEvent(
-    id: UUID
-  ): Future[EventDto] = guest.v.fold(Api.event(id))(
-    (
-      t,
-      _
-    ) => Api.publicEvent(t, id)
-  )
+  def fetchEvent(id: UUID): Future[EventDto] = guest.v.fold(Api.event(id))((t, _) => Api.publicEvent(t, id))
 
   /** 自分の操作の後に、予定を読み直す. */
   def changed(): Unit = { load(); reminders.refresh() }
 
-  def calendar(
-    id: UUID
-  ): Option[CalendarDto] = calendars.v.find(_.id == id)
+  def calendar(id: UUID): Option[CalendarDto] = calendars.v.find(_.id == id)
 
   /** 予定の色（予定の色 → カレンダーの自分の色 → カレンダーの色）. */
-  def color(
-    o: OccurrenceDto
-  ): String =
+  def color(o: OccurrenceDto): String =
     o.color.getOrElse(calendar(o.calendarId).map(_.displayColor).getOrElse("#616161"))
 
   /** 表示するカレンダーの予定だけ（招待された予定は、カレンダーを見られなくても出す）. */
@@ -311,30 +255,18 @@ object Store {
     calendars.v.filter(_.writable).sortBy(c => (!c.primary, c.role != CalRole.Owner, c.name))
 
   /** 予定の最初の日と最後の日（画面のタイムゾーンで. 0時ちょうどに終わる予定は前の日まで）. */
-  def firstDay(
-    o: OccurrenceDto
-  ): String = if (o.allDay) o.start else Cal.dateOf(o.start)
-  def lastDay(
-    o: OccurrenceDto
-  ): String =
+  def firstDay(o: OccurrenceDto): String = if (o.allDay) o.start else Cal.dateOf(o.start)
+  def lastDay(o: OccurrenceDto): String =
     if (o.allDay) o.end
     else { val e = Cal.dateOf(o.end); if (Cal.minutesOf(o.end) == 0 && o.end > o.start) Cal.addDays(e, -1) else e }
 
   /** その日にかかる予定か. */
-  def onDay(
-    o: OccurrenceDto,
-    d: String
-  ): Boolean = firstDay(o) <= d && lastDay(o) >= d
+  def onDay(o: OccurrenceDto, d: String): Boolean = firstDay(o) <= d && lastDay(o) >= d
 
-  def dotStyle(
-    o: OccurrenceDto
-  ): String = s"background: ${color(o)}"
+  def dotStyle(o: OccurrenceDto): String = s"background: ${color(o)}"
 
   /** 予定のチップのクラス（招待の返事・予定あり・なしのみで見た目を変える）. */
-  def chipClass(
-    o: OccurrenceDto,
-    base: String
-  ): String = base + (if (o.busy) " busy" else "") +
+  def chipClass(o: OccurrenceDto, base: String): String = base + (if (o.busy) " busy" else "") +
     (o.myResponse match {
       case Some(Rsvp.Declined) => " declined"
       case Some(Rsvp.NeedsAction) => " pending"
@@ -346,10 +278,7 @@ object Store {
    * 予定の日時の表示. withDate なら1日の予定にも日付を付ける.
    * 10:00 – 11:00 / 終日 / 11月15日(日) 10:00 – 11月16日(月) 09:00（withDate: 2026年11月15日(日) ⋅ 10:00 – 11:00）
    */
-  def timeText(
-    o: OccurrenceDto,
-    withDate: Boolean = false
-  ): String =
+  def timeText(o: OccurrenceDto, withDate: Boolean = false): String =
     if (firstDay(o) != lastDay(o)) {
       if (o.allDay) s"${Cal.label(o.start)} – ${Cal.label(o.end)}"
       else
@@ -367,13 +296,11 @@ object Store {
    * 新しい予定の編集を始める（公開リンクで見ているときは何もしない）.
    * startMin は d の、endMin は endDate（省けば d）の0時からの分（終日なら無視する. 1440 なら翌日の0時）.
    */
-  def create(
-    d: String,
-    startMin: Int = -1,
-    endMin: Int = -1,
-    allDay: Boolean = false,
-    endDate: Option[String] = None
-  ): Unit =
+  def create(d: String,
+             startMin: Int = -1,
+             endMin: Int = -1,
+             allDay: Boolean = false,
+             endDate: Option[String] = None): Unit =
     if (guest.v.isEmpty) defaultCalendar match {
       case None => toast("予定を入れられるカレンダーがありません", error = true)
       case Some(c) =>
@@ -406,17 +333,12 @@ object Store {
     }
 
   /** 予定（の1回）の編集を始める. */
-  def edit(
-    o: OccurrenceDto
-  ): Unit = report(Api.event(o.eventId)) { e =>
+  def edit(o: OccurrenceDto): Unit = report(Api.event(o.eventId)) { e =>
     detail := None
     editor := Some(draftOf(e, o))
   }
 
-  def draftOf(
-    e: EventDto,
-    o: OccurrenceDto
-  ): Draft =
+  def draftOf(e: EventDto, o: OccurrenceDto): Draft =
     if (o.allDay) Draft(
       Some(e.id),
       Some(o.occurrence),
@@ -459,13 +381,7 @@ object Store {
     )
 
   /** 繰り返しの予定なら、どの範囲に適用するかを聞いてから f（verb は「変更」「削除」）. */
-  def askScope(
-    recurring: Boolean,
-    verb: String,
-    onCancel: () => Unit = () => ()
-  )(
-    f: Option[String] => Unit
-  ): Unit =
+  def askScope(recurring: Boolean, verb: String, onCancel: () => Unit = () => ())(f: Option[String] => Unit): Unit =
     if (!recurring) f(None)
     else Dialog.choose(
       s"繰り返しの予定を${verb}します",
@@ -480,20 +396,13 @@ object Store {
     )(sc => f(Some(sc)))
 
   /** 予定を保存する. 「この予定」と「これ以降」は新しい予定になるので、version は送らない. */
-  private def saveDraft(
-    d: Draft,
-    scope: Option[String]
-  ): Future[EventDto] = {
+  private def saveDraft(d: Draft, scope: Option[String]): Future[EventDto] = {
     val req = if (scope.exists(_ != EditScope.All)) d.toReq.copy(version = None) else d.toReq
     Api.saveEvent(d.id, req, scope.flatMap(sc => d.occurrence.map(sc -> _)))
   }
 
   /** 編集中の予定を保存する. */
-  def save(
-    d: Draft
-  )(
-    done: => Unit
-  ): Unit =
+  def save(d: Draft)(done: => Unit): Unit =
     askScope(d.wasRecurring, "変更") { scope =>
       report(saveDraft(d, scope)) { e =>
         editor := None
@@ -506,9 +415,7 @@ object Store {
       }
     }
 
-  def remove(
-    o: OccurrenceDto
-  ): Unit =
+  def remove(o: OccurrenceDto): Unit =
     askScope(o.recurring, "削除") { scope =>
       val go = () =>
         report(Api.deleteEvent(o.eventId, scope.map(_ -> o.occurrence))) { _ =>
@@ -520,13 +427,7 @@ object Store {
     }
 
   /** ドラッグで動かした・伸ばした予定を保存する（新しい開始・終わり. 終日なら日付）. */
-  def move(
-    o: OccurrenceDto,
-    start: String,
-    end: String
-  )(
-    cancel: => Unit
-  ): Unit =
+  def move(o: OccurrenceDto, start: String, end: String)(cancel: => Unit): Unit =
     Api.event(o.eventId).onComplete {
       case Failure(e) => error(e); cancel
       case Success(e) =>
@@ -547,10 +448,7 @@ object Store {
         )
     }
 
-  def rsvp(
-    o: OccurrenceDto,
-    response: String
-  ): Unit =
+  def rsvp(o: OccurrenceDto, response: String): Unit =
     report(Api.rsvp(o.eventId, response)) { _ =>
       detail := detail.v.map(_.copy(myResponse = Some(response)))
       changed()
@@ -560,12 +458,7 @@ object Store {
 
   /** 表示の期間が変わったら読み直し、ほかの人の変更も1分ごとに取りに行く. */
   def start(): Unit = {
-    watch(computed((view.v, date.v, weekStart.v, weekends.v)))(
-      (
-        _,
-        _
-      ) => load()
-    )
+    watch(computed((view.v, date.v, weekStart.v, weekends.v)))((_, _) => load())
     dom.window.setInterval(
       () => if (dom.document.visibilityState.toString == "visible" && editor.v.isEmpty) load(),
       60000
@@ -599,10 +492,7 @@ object Store {
       last = now
     }
 
-    private def notify(
-      o: OccurrenceDto,
-      minutes: Int
-    ): Unit = {
+    private def notify(o: OccurrenceDto, minutes: Int): Unit = {
       val when = if (minutes == 0) "" else s"（${Reminders.label(minutes).stripSuffix("前")}後）"
       val text = s"${Cal.time(o.start)}$when ${o.title}" + (if (o.location.nonEmpty) s"（${o.location}）" else "")
       toast("🔔 " + text)
@@ -626,44 +516,30 @@ object Store {
 
 /** DOM の補助. */
 object Dom {
-  def value(
-    e: dom.Event
-  ): String = e.target.asInstanceOf[js.Dynamic].value.asInstanceOf[String]
-  def checked(
-    e: dom.Event
-  ): Boolean = e.target.asInstanceOf[dom.HTMLInputElement].checked
+  def value(e: dom.Event): String = e.target.asInstanceOf[js.Dynamic].value.asInstanceOf[String]
+  def checked(e: dom.Event): Boolean = e.target.asInstanceOf[dom.HTMLInputElement].checked
 
-  def copy(
-    text: String,
-    message: String = "コピーしました"
-  ): Unit = {
+  def copy(text: String, message: String = "コピーしました"): Unit = {
     dom.window.navigator.clipboard.writeText(text)
     Store.toast(message)
   }
 }
 
 /** 画面内のダイアログ（ブラウザ標準の confirm・prompt の代わり）. 表示は parts/DialogHost.st. */
-final case class DialogReq(
-  message: String,
-  okLabel: String,
-  danger: Boolean,
-  input: Option[RV[String]],
-  choices: List[(String, String)],
-  onOk: String => Unit,
-  onCancel: () => Unit)
+final case class DialogReq(message: String,
+                           okLabel: String,
+                           danger: Boolean,
+                           input: Option[RV[String]],
+                           choices: List[(String, String)],
+                           onOk: String => Unit,
+                           onCancel: () => Unit)
 
 /** この端末だけの表示の設定（localStorage. 使えないときは既定値）. */
 object Prefs {
-  def get(
-    key: String,
-    default: String
-  ): String =
+  def get(key: String, default: String): String =
     scala.util.Try(Option(dom.window.localStorage.getItem("skuaka." + key))).toOption.flatten.getOrElse(default)
 
-  def set(
-    key: String,
-    value: String
-  ): Unit = scala.util.Try(dom.window.localStorage.setItem("skuaka." + key, value))
+  def set(key: String, value: String): Unit = scala.util.Try(dom.window.localStorage.setItem("skuaka." + key, value))
 }
 
 /** 画面の色（自動 = OS の設定、ライト、ダーク）. */
@@ -675,9 +551,7 @@ object Theme {
     if (current.v == "system") el.removeAttribute("data-theme") else el.setAttribute("data-theme", current.v)
   }
 
-  def set(
-    v: String
-  ): Unit = { current := v; Prefs.set("theme", v); apply() }
+  def set(v: String): Unit = { current := v; Prefs.set("theme", v); apply() }
 
   val options: List[(String, String)] = List("system" -> "自動（OS に合わせる）", "light" -> "ライト", "dark" -> "ダーク")
 }

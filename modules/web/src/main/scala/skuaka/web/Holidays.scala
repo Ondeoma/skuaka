@@ -5,51 +5,30 @@ object Holidays {
 
   private var cache: Map[Int, Map[String, String]] = Map.empty
 
-  def name(
-    d: String
-  ): Option[String] = of(Cal.year(d)).get(d)
+  def name(d: String): Option[String] = of(Cal.year(d)).get(d)
 
   /** 赤く表示する日（祝日・日曜日）. */
-  def red(
-    d: String
-  ): Boolean = Cal.dow(d) == 0 || name(d).isDefined
+  def red(d: String): Boolean = Cal.dow(d) == 0 || name(d).isDefined
 
   /** 休みの日（祝日・土日）. */
-  def off(
-    d: String
-  ): Boolean = Cal.dow(d) == 6 || red(d)
+  def off(d: String): Boolean = Cal.dow(d) == 6 || red(d)
 
   /** 日付の見出しのクラス（今日は today、祝日・日曜日は hol を足す）. */
-  def dayClass(
-    base: String,
-    d: String
-  ): String =
+  def dayClass(base: String, d: String): String =
     base + (if (d == Cal.today()) " today" else "") + (if (red(d)) " hol" else "")
 
-  def of(
-    y: Int
-  ): Map[String, String] = cache.getOrElse(y, { val m = compute(y); cache = cache.updated(y, m); m })
+  def of(y: Int): Map[String, String] = cache.getOrElse(y, { val m = compute(y); cache = cache.updated(y, m); m })
 
-  private def ymd(
-    y: Int,
-    m: Int,
-    d: Int
-  ): String = f"$y%04d-$m%02d-$d%02d"
+  private def ymd(y: Int, m: Int, d: Int): String = f"$y%04d-$m%02d-$d%02d"
 
   /** m 月の第 n 月曜日. */
-  private def monday(
-    y: Int,
-    m: Int,
-    n: Int
-  ): String = {
+  private def monday(y: Int, m: Int, n: Int): String = {
     val first = ymd(y, m, 1)
     val off = (8 - Cal.dow(first)) % 7
     Cal.addDays(first, off + (n - 1) * 7)
   }
 
-  private def compute(
-    y: Int
-  ): Map[String, String] = {
+  private def compute(y: Int): Map[String, String] = {
     val k = y - 1980
     val spring = (20.8431 + 0.242194 * k - math.floor(k / 4.0)).toInt
     val autumn = (23.2488 + 0.242194 * k - math.floor(k / 4.0)).toInt

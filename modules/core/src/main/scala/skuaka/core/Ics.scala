@@ -7,16 +7,15 @@ import java.time.format.DateTimeFormatter
 import java.time.{Instant, ZoneId, ZoneOffset}
 
 /** iCalendar（RFC 5545）の書き出しに使う予定. */
-final case class IcsEvent(
-  uid: String,
-  title: String,
-  description: String,
-  location: String,
-  span: Span,
-  zone: ZoneId,
-  rule: Option[Recurrence],
-  exdates: List[String],
-  updatedAt: Instant)
+final case class IcsEvent(uid: String,
+                          title: String,
+                          description: String,
+                          location: String,
+                          span: Span,
+                          zone: ZoneId,
+                          rule: Option[Recurrence],
+                          exdates: List[String],
+                          updatedAt: Instant)
 
 /** iCalendar の書き出し（カレンダーアプリから購読できる）. */
 object Ics {
@@ -24,18 +23,14 @@ object Ics {
   private val local = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
   private val date = DateTimeFormatter.BASIC_ISO_DATE
 
-  def escape(
-    s: String
-  ): String =
+  def escape(s: String): String =
     s.replace(
       "\\",
       "\\\\"
     ).replace(";", "\\;").replace(",", "\\,").replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "")
 
   /** 75 オクテットごとに折り返す（マルチバイト文字の途中では切らない）. */
-  def fold(
-    line: String
-  ): String = {
+  def fold(line: String): String = {
     val out = new StringBuilder
     var len = 0
     line.codePoints().forEach { cp =>
@@ -51,17 +46,10 @@ object Ics {
     out.toString
   }
 
-  private def time(
-    name: String,
-    at: Instant,
-    zone: ZoneId
-  ): String =
+  private def time(name: String, at: Instant, zone: ZoneId): String =
     s"$name;TZID=${zone.getId}:${local.format(at.atZone(zone).toLocalDateTime)}"
 
-  def event(
-    e: IcsEvent,
-    stamp: Instant
-  ): List[String] = {
+  def event(e: IcsEvent, stamp: Instant): List[String] = {
     val times = e.span match {
       case Span.Timed(s, en) => List(time("DTSTART", s, e.zone), time("DTEND", en, e.zone))
       case Span.AllDay(s, en) =>
@@ -86,11 +74,7 @@ object Ics {
       List("END:VEVENT")
   }
 
-  def calendar(
-    name: String,
-    events: List[IcsEvent],
-    stamp: Instant
-  ): String = {
+  def calendar(name: String, events: List[IcsEvent], stamp: Instant): String = {
     val lines = List(
       "BEGIN:VCALENDAR",
       "VERSION:2.0",

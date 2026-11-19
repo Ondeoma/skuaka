@@ -17,24 +17,19 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 /** 外部のカレンダーの取り込み（iCalendar のファイル）と、iCalendar の URL の購読（定期的に読み直す）. */
-final class CalendarImporter(
-  http: Client[IO],
-  calendars: CalendarStore,
-  events: EventStore,
-  users: UserStore,
-  guard: UrlGuard = UrlGuard.publicOnly,
-  val syncEvery: FiniteDuration = 1.hour) {
+final class CalendarImporter(http: Client[IO],
+                             calendars: CalendarStore,
+                             events: EventStore,
+                             users: UserStore,
+                             guard: UrlGuard = UrlGuard.publicOnly,
+                             val syncEvery: FiniteDuration = 1.hour) {
 
   /** 読み込む iCalendar の大きさの上限と、転送の回数の上限. */
   private val MaxBytes = IcsImport.MaxBytes
   private val MaxRedirects = 3
 
   /** 取り込んだ予定の行（ゲスト・通知・色は付けない. 長すぎる文字は切る）. */
-  private def row(
-    calendarId: UUID,
-    organizer: UUID,
-    e: ParsedEvent
-  ): (String, EventRow) = {
+  private def row(calendarId: UUID, organizer: UUID, e: ParsedEvent): (String, EventRow) = {
     val (sa, ea, sd, ed) = e.span match {
       case Span.Timed(s, en) => (Some(s), Some(en), None, None)
       case Span.AllDay(s, en) => (None, None, Some(s), Some(en))
@@ -66,32 +61,24 @@ final class CalendarImporter(
    * zone は浮動の時刻（タイムゾーンのない日時）を読むタイムゾーン. removeMissing なら、ファイルにない取り込み済みの予定を消す（購読）.
    * 戻り値の名前は iCalendar に書かれたカレンダーの名前.
    */
-  def importText(
-    calendarId: UUID,
-    organizer: UUID,
-    text: String,
-    zone: ZoneId,
-    removeMissing: Boolean
-  ): IO[Either[String, (ImportResultDto, Option[String])]] =
+  def importText(calendarId: UUID,
+                 organizer: UUID,
+                 text: String,
+                 zone: ZoneId,
+                 removeMissing: Boolean): IO[Either[String, (ImportResultDto, Option[String])]] =
     IO(IcsParse.parse(text, zone)).flatMap {
       case Left(e) => IO.pure(Left(e))
       case Right(p) =>
         // 同じ UID が重なっていたら後のものを使う（1つの文で同じ行を2回書けないため）
         val rows = p.events.map(row(calendarId, organizer, _)).reverse.distinctBy(_._1).reverse
         events.importEvents(calendarId, rows, removeMissing).map {
-          (
-            c,
-            u,
-            r
-          ) =>
+          (c, u, r) =>
             Right(ImportResultDto(c, u, r, p.skipped, p.events.count(_.approximated)) -> p.name)
         }
     }
 
   /** webcal:// を https:// に直し、http(s) の URL か確かめる. */
-  def normalize(
-    url: String
-  ): Either[String, URI] = {
+  def normalize(url: String): Either[String, URI] = {
     val s = url.trim.replaceFirst("(?i)^webcals?://", "https://")
     Either.catchNonFatal(URI.create(s)).toOption
       .filter(u =>
@@ -103,10 +90,7 @@ final class CalendarImporter(
   }
 
   /** URL から iCalendar を読む（転送は MaxRedirects 回まで. 転送先も確かめる）. */
-  def fetch(
-    uri: URI,
-    redirects: Int = 0
-  ): IO[Either[String, String]] =
+  def fetch(uri: URI, redirects: Int = 0): IO[Either[String, String]] =
     guard.check(uri).flatMap {
       case Left(e) => IO.pure(Left(e))
       case Right(_) =>
@@ -140,14 +124,11 @@ final class CalendarImporter(
         }
     }
 
-  private def zoneOf(
-    uid: UUID
-  ): IO[ZoneId] = users.find(uid).map(_.flatMap(u => Time.zone(u.timezone)).getOrElse(ZoneOffset.UTC))
+  private def zoneOf(uid: UUID): IO[ZoneId] =
+    users.find(uid).map(_.flatMap(u => Time.zone(u.timezone)).getOrElse(ZoneOffset.UTC))
 
   /** 購読を読み直す（失敗の理由はカレンダーに残す）. */
-  def sync(
-    s: Subscription
-  ): IO[Either[String, ImportResultDto]] =
+  def sync(s: Subscription): IO[Either[String, ImportResultDto]] =
     (for {
       zone <- zoneOf(s.ownerId)
       r <- normalize(s.url).fold(e => IO.pure(Left(e)), fetch(_))
@@ -161,10 +142,7 @@ final class CalendarImporter(
     )
 
   /** 購読の URL を確かめて読み、カレンダーを作って取り込む（読めなければ作らない）. 戻り値は作ったカレンダー. */
-  def subscribe(
-    u: User,
-    r: SubscribeReq
-  ): IO[Either[String, UUID]] =
+  def subscribe(u: User, r: SubscribeReq): IO[Either[String, UUID]] =
     normalize(r.url) match {
       case Left(e) => IO.pure(Left(e))
       case Right(uri) =>

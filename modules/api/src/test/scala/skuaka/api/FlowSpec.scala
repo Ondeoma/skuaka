@@ -145,15 +145,11 @@ class FlowSpec extends munit.CatsEffectSuite {
 
   override def munitFixtures = List(fixture)
 
-  private def location(
-    r: Response[IO]
-  ): Uri = r.headers.get[Location].map(_.uri).getOrElse(fail(s"no Location (${r.status})"))
+  private def location(r: Response[IO]): Uri =
+    r.headers.get[Location].map(_.uri).getOrElse(fail(s"no Location (${r.status})"))
 
   /** IdP でログインして、セッションの Cookie を受け取る. */
-  private def login(
-    name: String,
-    email: String
-  ): IO[String] = {
+  private def login(name: String, email: String): IO[String] = {
     val (idp, app, _) = fixture()
     for {
       r1 <- app.run(Request[IO](Method.GET, uri"/auth/login?returnTo=/week"))
@@ -173,12 +169,7 @@ class FlowSpec extends munit.CatsEffectSuite {
     } yield r3.cookies.find(_.name == "skuaka_session").map(_.content).getOrElse(fail("no session cookie"))
   }
 
-  private def call(
-    token: String,
-    m: Method,
-    path: String,
-    body: Option[Json] = None
-  ): IO[Response[IO]] = {
+  private def call(token: String, m: Method, path: String, body: Option[Json] = None): IO[Response[IO]] = {
     val (_, app, _) = fixture()
     val base = Request[IO](
       m,
@@ -187,9 +178,7 @@ class FlowSpec extends munit.CatsEffectSuite {
     app.run(body.fold(base)(base.withEntity(_)))
   }
 
-  private def json[A: io.circe.Decoder](
-    r: Response[IO]
-  ): IO[A] =
+  private def json[A: io.circe.Decoder](r: Response[IO]): IO[A] =
     if r.status.isSuccess then r.as[A] else r.bodyText.compile.string.flatMap(t => IO(fail(s"${r.status}: $t")))
 
   test("OIDC でログインし、自分のカレンダーができる. 同じ state は2回使えない") {
@@ -265,11 +254,7 @@ class FlowSpec extends munit.CatsEffectSuite {
 
   test("IP ごとの回数の制限: ログイン・公開リンクだけ. 信じるプロキシからだけ X-Forwarded-For を使う. IPv6 は /64 でまとめる") {
     import com.comcast.ip4s.*
-    def from(
-      ip: String,
-      path: String,
-      xff: Option[String] = None
-    ): Request[IO] = {
+    def from(ip: String, path: String, xff: Option[String] = None): Request[IO] = {
       val conn = Request.Connection(
         SocketAddress(ip"127.0.0.1", port"8080"),
         SocketAddress(IpAddress.fromString(ip).get, port"50000"),
@@ -420,12 +405,7 @@ class FlowSpec extends munit.CatsEffectSuite {
     } yield ()
   }
 
-  private def bearer(
-    token: String,
-    m: Method,
-    path: String,
-    body: Option[Json] = None
-  ): IO[Response[IO]] = {
+  private def bearer(token: String, m: Method, path: String, body: Option[Json] = None): IO[Response[IO]] = {
     val (_, app, _) = fixture()
     val base = Request[IO](
       m,
@@ -435,20 +415,13 @@ class FlowSpec extends munit.CatsEffectSuite {
   }
 
   // for 式でタプルを分解するため
-  extension [A](
-    io: IO[A]
-  ) {
-    private def withFilter(
-      p: A => Boolean
-    ): IO[A] = io.flatMap(a => if p(a) then IO.pure(a) else IO.raiseError(new MatchError(a)))
+  extension [A](io: IO[A]) {
+    private def withFilter(p: A => Boolean): IO[A] =
+      io.flatMap(a => if p(a) then IO.pure(a) else IO.raiseError(new MatchError(a)))
   }
 
   /** MCP のツールを呼び、結果の文字列と isError を返す. */
-  private def mcp(
-    token: String,
-    tool: String,
-    args: Json
-  ): IO[(String, Boolean)] =
+  private def mcp(token: String, tool: String, args: Json): IO[(String, Boolean)] =
     bearer(
       token,
       Method.POST,
@@ -841,11 +814,7 @@ class FlowSpec extends munit.CatsEffectSuite {
   }
 
   /** 本文を画像などのバイト列で送る. */
-  private def upload(
-    token: String,
-    path: String,
-    data: Array[Byte]
-  ): IO[Response[IO]] = {
+  private def upload(token: String, path: String, data: Array[Byte]): IO[Response[IO]] = {
     val (_, app, _) = fixture()
     app.run(Request[IO](Method.PUT, Uri.unsafeFromString(path)).withBodyStream(fs2.Stream.emits(data))
       .putHeaders(Cookie(RequestCookie("skuaka_session", token)), Header.Raw(CIString("X-Skuaka"), "1")))
@@ -893,9 +862,7 @@ class FlowSpec extends munit.CatsEffectSuite {
   }
 
   /** skaka との連携: 許可の画面へ移り、戻ってきたらトークンを保存する. */
-  private def connectSkaka(
-    a: String
-  ): IO[Unit] =
+  private def connectSkaka(a: String): IO[Unit] =
     for {
       r1 <- call(a, Method.GET, "/api/integrations/skaka/connect?returnTo=/settings")
       _ = assertEquals(r1.status, Status.Found)
@@ -926,15 +893,8 @@ class FlowSpec extends munit.CatsEffectSuite {
 
   test("Web 会議（skaka）: 連携すると予定に会議室を付けられる. 題名・日時を変えると会議室にも伝える. 失効したら連携が切れる. やめると失効させる") {
     val (_, _, xa) = fixture()
-    def status(
-      t: String
-    ) = call(t, Method.GET, "/api/integrations/skaka").flatMap(json[SkakaStatusDto])
-    def ev(
-      cal: UUID,
-      title: String,
-      loc: String,
-      meeting: Boolean
-    ) =
+    def status(t: String) = call(t, Method.GET, "/api/integrations/skaka").flatMap(json[SkakaStatusDto])
+    def ev(cal: UUID, title: String, loc: String, meeting: Boolean) =
       EventReq(
         cal,
         title,
@@ -1023,33 +983,22 @@ class FlowSpec extends munit.CatsEffectSuite {
   private val verifier = "v" * 50
   private val challenge = sbirds.auth.Crypto.pkceChallenge(verifier)
 
-  private def authorizeUri(
-    client: String = "skakapo",
-    redirect: String = kakapoCb,
-    scope: String = "read write",
-    method: String = "S256"
-  ): String = {
-    def e(
-      v: String
-    ) = java.net.URLEncoder.encode(v, "UTF-8")
+  private def authorizeUri(client: String = "skakapo",
+                           redirect: String = kakapoCb,
+                           scope: String = "read write",
+                           method: String = "S256"): String = {
+    def e(v: String) = java.net.URLEncoder.encode(v, "UTF-8")
     s"/oauth/authorize?response_type=code&client_id=${e(client)}&redirect_uri=${e(redirect)}&scope=${e(scope)}&state=st1" +
       s"&code_challenge=$challenge&code_challenge_method=$method"
   }
 
-  private def tokenReq(
-    form: (String, String)*
-  )(
-    client: String = "skakapo",
-    secret: String = "skakapo-test-secret-0123456789"
-  ): IO[Response[IO]] =
+  private def tokenReq(form: (String, String)*)(client: String = "skakapo",
+                                                secret: String = "skakapo-test-secret-0123456789"): IO[Response[IO]] =
     fixture()._2.run(Request[IO](Method.POST, uri"/oauth/token").withEntity(UrlForm(form*))
       .putHeaders(org.http4s.headers.Authorization(BasicCredentials(client, secret))))
 
   /** ログインしたユーザーが許可して、トークンの応答（JSON）を受け取る. */
-  private def grant(
-    session: String,
-    scope: String
-  ): IO[Json] = {
+  private def grant(session: String, scope: String): IO[Json] = {
     val app = fixture()._2
     for {
       pg <- app.run(Request[IO](
@@ -1128,9 +1077,7 @@ class FlowSpec extends munit.CatsEffectSuite {
 
   test("OAuth: 未ログインはログインへ 302. 知らない client・違う redirect_uri は 400. 許していないスコープは invalid_scope. PKCE は S256 だけ") {
     val app = fixture()._2
-    def get(
-      u: String
-    ) = app.run(Request[IO](Method.GET, Uri.unsafeFromString(u)))
+    def get(u: String) = app.run(Request[IO](Method.GET, Uri.unsafeFromString(u)))
     for {
       r1 <- get(authorizeUri())
       _ = assertEquals(r1.status, Status.Found)
@@ -1267,31 +1214,20 @@ class FlowSpec extends munit.CatsEffectSuite {
 
   // ---------------------------------------------------------------- 外部のカレンダーの取り込み・購読
 
-  private def ics(
-    events: (String, String, String)*
-  ): String =
-    (List("BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:外部の予定") ++ events.toList.flatMap(
-      (
-        uid,
-        title,
-        day
-      ) =>
-        List(
-          "BEGIN:VEVENT",
-          s"UID:$uid",
-          s"DTSTART;TZID=Asia/Tokyo:${day}T100000",
-          s"DTEND;TZID=Asia/Tokyo:${day}T110000",
-          s"SUMMARY:$title",
-          "END:VEVENT"
-        )
+  private def ics(events: (String, String, String)*): String =
+    (List("BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:外部の予定") ++ events.toList.flatMap((uid, title, day) =>
+      List(
+        "BEGIN:VEVENT",
+        s"UID:$uid",
+        s"DTSTART;TZID=Asia/Tokyo:${day}T100000",
+        s"DTEND;TZID=Asia/Tokyo:${day}T110000",
+        s"SUMMARY:$title",
+        "END:VEVENT"
+      )
     ) ++
       List("END:VCALENDAR")).mkString("\r\n")
 
-  private def importIcs(
-    token: String,
-    cal: UUID,
-    text: String
-  ): IO[Response[IO]] = {
+  private def importIcs(token: String, cal: UUID, text: String): IO[Response[IO]] = {
     val (_, app, _) = fixture()
     app.run(Request[IO](Method.POST, Uri.unsafeFromString(s"/api/calendars/$cal/import"))
       .putHeaders(Cookie(RequestCookie("skuaka_session", token)), Header.Raw(CIString("X-Skuaka"), "1"))
@@ -1300,9 +1236,7 @@ class FlowSpec extends munit.CatsEffectSuite {
       )))
   }
 
-  private def december(
-    t: String
-  ): IO[List[OccurrenceDto]] =
+  private def december(t: String): IO[List[OccurrenceDto]] =
     call(t, Method.GET, "/api/events?from=2026-12-01&to=2027-01-01&tz=Asia/Tokyo").flatMap(json[List[OccurrenceDto]])
 
   test("取り込み: iCalendar のファイルを取り込む. 取り込み直すと変わった予定だけを上書きし、重ならない") {
@@ -1387,9 +1321,7 @@ class FlowSpec extends munit.CatsEffectSuite {
   }
 
   test("購読: 内部のアドレス（localhost・社内のネットワーク・メタデータ）は読みに行かない") {
-    def blocked(
-      ip: String
-    ) = UrlGuard.blocked(java.net.InetAddress.getByName(ip))
+    def blocked(ip: String) = UrlGuard.blocked(java.net.InetAddress.getByName(ip))
     List(
       "127.0.0.1",
       "10.1.2.3",

@@ -13,10 +13,7 @@ object SecurityHeaders {
   val StrictCsp =
     "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 
-  def apply(
-    routes: HttpRoutes[IO],
-    hsts: Boolean
-  ): HttpRoutes[IO] = {
+  def apply(routes: HttpRoutes[IO], hsts: Boolean): HttpRoutes[IO] = {
     val fixed = List[Header.ToRaw](
       "X-Content-Type-Options" -> "nosniff",
       "X-Frame-Options" -> "DENY",

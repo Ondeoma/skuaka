@@ -13,13 +13,12 @@ import java.time.Instant
 import java.util.UUID
 
 /** カレンダー・共有・表示の設定・iCalendar の配信. */
-final class CalendarRoutes(
-  calendars: CalendarStore,
-  events: EventStore,
-  users: UserStore,
-  val sessions: SessionAuth,
-  cfg: ApiConfig,
-  importer: Option[CalendarImporter] = None) extends RouteSupport {
+final class CalendarRoutes(calendars: CalendarStore,
+                           events: EventStore,
+                           users: UserStore,
+                           val sessions: SessionAuth,
+                           cfg: ApiConfig,
+                           importer: Option[CalendarImporter] = None) extends RouteSupport {
 
   /**
    * iCalendar のファイルの取り込み（本文は iCalendar の文字列. 大きなファイルを受けるため、ほかの API と本文の上限を分ける）.
@@ -29,15 +28,9 @@ final class CalendarRoutes(
     case req @ POST -> Root / "api" / "calendars" / UuidVar(id) / "import" => postCalendarImport(req, id)
   }
 
-  private def postCalendarImport(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postCalendarImport(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Edit) {
-      (
-        u,
-        c
-      ) =>
+      (u, c) =>
         if c.subscribed then err(ErrorCode.ImportIntoSubscribedCalendar)
         else
           withImporter { im =>
@@ -75,22 +68,16 @@ final class CalendarRoutes(
     case GET -> Root / "ics" / file if file.endsWith(".ics") => getIcsFeed(file)
   }
 
-  private def getCalendars(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getCalendars(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u => calendars.list(u.id).flatMap(dtos).flatMap(Ok(_)))
 
-  private def postCalendars(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postCalendars(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u =>
       body[CalendarReq](req)(r => valid(checkReq(r))(ok => calendars.create(u.id, ok).flatMap(one(u, _))))
     )
 
   // iCalendar の URL を購読する（読めたらカレンダーを作る. 予定は読み取りだけで、定期的に読み直す）
-  private def postCalendarsSubscribe(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postCalendarsSubscribe(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u =>
       body[SubscribeReq](req)(r =>
         withImporter(_.subscribe(u, r).flatMap(_.fold(err(ErrorCode.SubscribeFailed, _), one(u, _))))
@@ -98,15 +85,9 @@ final class CalendarRoutes(
     )
 
   // 購読を今すぐ読み直す（所有者だけ）
-  private def postCalendarSync(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postCalendarSync(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Owner) {
-      (
-        u,
-        c
-      ) =>
+      (u, c) =>
         (c.sourceUrl, importer) match {
           case (Some(url), Some(im)) =>
             im.sync(Subscription(id, c.ownerId, url)).flatMap(_.fold(
@@ -117,67 +98,35 @@ final class CalendarRoutes(
         }
     }
 
-  private def putCalendar(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
-    withCalendar(req, id, CalRole.Owner)(
-      (
-        u,
-        _
-      ) => body[CalendarReq](req)(r => valid(checkReq(r))(ok => calendars.update(id, ok) *> one(u, id)))
+  private def putCalendar(req: Request[IO], id: UUID): IO[Response[IO]] =
+    withCalendar(req, id, CalRole.Owner)((u, _) =>
+      body[CalendarReq](req)(r => valid(checkReq(r))(ok => calendars.update(id, ok) *> one(u, id)))
     )
 
   // 自分だけの表示の設定（色・表示するか）
-  private def patchCalendarPrefs(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def patchCalendarPrefs(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Busy) {
-      (
-        u,
-        _
-      ) =>
+      (u, _) =>
         body[CalendarPrefReq](req) { p =>
           valid(p.color.filter(_.nonEmpty).traverse(Check.color))(_ => calendars.setPrefs(u.id, id, p) *> one(u, id))
         }
     }
 
   // 所有者は削除（予定もすべて消える）、ほかの人は共有から抜ける（チームに公開されたものは一覧から外す）
-  private def deleteCalendar(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteCalendar(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Busy) {
-      (
-        u,
-        c
-      ) =>
+      (u, c) =>
         if c.role != CalRole.Owner then calendars.removeMember(id, u.id) *> NoContent()
         else if c.primary then err(ErrorCode.PrimaryCalendarNotDeletable)
         else calendars.delete(id) *> NoContent()
     }
 
-  private def getCalendarMembers(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
-    withCalendar(req, id, CalRole.View)(
-      (
-        _,
-        _
-      ) => calendars.members(id).flatMap(Ok(_))
-    )
+  private def getCalendarMembers(req: Request[IO], id: UUID): IO[Response[IO]] =
+    withCalendar(req, id, CalRole.View)((_, _) => calendars.members(id).flatMap(Ok(_)))
 
-  private def postCalendarMembers(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postCalendarMembers(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Owner) {
-      (
-        u,
-        _
-      ) =>
+      (u, _) =>
         body[MemberReq](req) { m =>
           if !Set(CalRole.View, CalRole.Edit).contains(m.role) then err(ErrorCode.ShareRoleInvalid)
           else
@@ -189,40 +138,22 @@ final class CalendarRoutes(
         }
     }
 
-  private def deleteCalendarMember(
-    req: Request[IO],
-    id: UUID,
-    uid: UUID
-  ): IO[Response[IO]] =
-    withCalendar(req, id, CalRole.Owner)(
-      (
-        _,
-        _
-      ) => calendars.removeMember(id, uid) *> calendars.members(id).flatMap(Ok(_))
+  private def deleteCalendarMember(req: Request[IO], id: UUID, uid: UUID): IO[Response[IO]] =
+    withCalendar(req, id, CalRole.Owner)((_, _) =>
+      calendars.removeMember(id, uid) *> calendars.members(id).flatMap(Ok(_))
     )
 
   // チームの人が公開しているカレンダーを探す・自分の一覧に加える（外すのは DELETE /api/calendars/{id}）
-  private def getTeamCalendars(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getTeamCalendars(req: Request[IO]): IO[Response[IO]] =
     authed(req)(u => calendars.team(u.id, param(req, "q").getOrElse(""), 200).flatMap(teamDtos).flatMap(Ok(_)))
 
-  private def postTeamCalendar(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postTeamCalendar(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(u => calendars.addTeam(u.id, id).ifM(one(u, id), err(ErrorCode.TeamCalendarNotFound)))
 
   // ログインしない人への公開リンク: 作る・範囲を変える（regenerate で作り直す. 前のリンクは使えなくなる）・やめる
-  private def postCalendarPublic(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postCalendarPublic(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Owner) {
-      (
-        u,
-        c
-      ) =>
+      (u, c) =>
         body[PublicLinkReq](req) { p =>
           if !Set(CalRole.Busy, CalRole.View).contains(p.access) then
             err(ErrorCode.PublishScopeInvalid)
@@ -233,21 +164,11 @@ final class CalendarRoutes(
         }
     }
 
-  private def deleteCalendarPublic(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
-    withCalendar(req, id, CalRole.Owner)(
-      (
-        u,
-        _
-      ) => calendars.stopPublic(id) *> one(u, id)
-    )
+  private def deleteCalendarPublic(req: Request[IO], id: UUID): IO[Response[IO]] =
+    withCalendar(req, id, CalRole.Owner)((u, _) => calendars.stopPublic(id) *> one(u, id))
 
   // iCalendar の配信（公開リンクを知っている人はだれでも読める. カレンダーアプリから URL で購読する）
-  private def getIcsFeed(
-    file: String
-  ): IO[Response[IO]] =
+  private def getIcsFeed(file: String): IO[Response[IO]] =
     sbirds.observe.Telemetry.span("ics.feed")(calendars.byPublicToken(file.stripSuffix(".ics")).flatMap {
       case None => sbirds.observe.Metrics.count("skuaka.ics.requests", "result" -> "not_found") *>
           err(ErrorCode.IcsFeedNotFound)
@@ -277,14 +198,10 @@ final class CalendarRoutes(
         }
     })
 
-  private def link(
-    r: CalendarRow
-  ): Option[PublicLinkDto] =
+  private def link(r: CalendarRow): Option[PublicLinkDto] =
     r.publicToken.map(t => PublicLinkDto(s"${cfg.publicUrl}/p/$t", s"${cfg.publicUrl}/ics/$t.ics", r.publicAccess))
 
-  private def dtos(
-    rows: List[CalendarRow]
-  ): IO[List[CalendarDto]] =
+  private def dtos(rows: List[CalendarRow]): IO[List[CalendarDto]] =
     calendars.owners(rows.map(_.ownerId)).map { owners =>
       rows.map { r =>
         CalendarDto(
@@ -307,14 +224,10 @@ final class CalendarRoutes(
       }
     }
 
-  private def owner(
-    owners: Map[UUID, UserBrief],
-    id: UUID
-  ): UserBrief = owners.getOrElse(id, UserBrief(id, "?", None, None))
+  private def owner(owners: Map[UUID, UserBrief], id: UUID): UserBrief =
+    owners.getOrElse(id, UserBrief(id, "?", None, None))
 
-  private def teamDtos(
-    rows: List[TeamCalendarRow]
-  ): IO[List[TeamCalendarDto]] =
+  private def teamDtos(rows: List[TeamCalendarRow]): IO[List[TeamCalendarDto]] =
     calendars.owners(rows.map(_.ownerId)).map(owners =>
       rows.map(r =>
         TeamCalendarDto(r.id, r.name, r.description, r.color, owner(owners, r.ownerId), r.primary, r.access, r.added)
@@ -322,13 +235,9 @@ final class CalendarRoutes(
     )
 
   /** カレンダーの権限を確かめてから処理する（見られなければ 404、足りなければ 403）. */
-  private def withCalendar(
-    req: Request[IO],
-    id: UUID,
-    need: String
-  )(
-    f: (User, CalendarRow) => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def withCalendar(req: Request[IO],
+                           id: UUID,
+                           need: String)(f: (User, CalendarRow) => IO[Response[IO]]): IO[Response[IO]] =
     authed(req) { u =>
       calendars.get(u.id, id).flatMap {
         case None => err(ErrorCode.CalendarNotFound)
@@ -338,9 +247,7 @@ final class CalendarRoutes(
       }
     }
 
-  private def checkReq(
-    r: CalendarReq
-  ): Either[String, CalendarReq] =
+  private def checkReq(r: CalendarReq): Either[String, CalendarReq] =
     for {
       name <- Either.cond(r.name.trim.nonEmpty, r.name.trim, "名前を入力してください").flatMap(Check.text(_, "名前", 100))
       desc <- Check.text(r.description.trim, "説明", 2000)
@@ -348,19 +255,14 @@ final class CalendarRoutes(
       acc <- r.teamAccess.traverse(a => Either.cond(TeamAccess.all.contains(a), a, "チームへの公開の範囲が正しくありません"))
     } yield CalendarReq(name, col, desc, acc)
 
-  private def one(
-    u: User,
-    id: UUID
-  ): IO[Response[IO]] =
+  private def one(u: User, id: UUID): IO[Response[IO]] =
     calendars.get(u.id, id).flatMap(_.traverse(r => dtos(List(r)).map(_.head))).flatMap {
       case Some(c) => Ok(c)
       case None => err(ErrorCode.CalendarNotFound)
     }
 
   /** 取り込み・購読ができないとき. */
-  private def withImporter(
-    f: CalendarImporter => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def withImporter(f: CalendarImporter => IO[Response[IO]]): IO[Response[IO]] =
     importer.fold(err(ErrorCode.ImportNotAvailable))(f)
 
 }

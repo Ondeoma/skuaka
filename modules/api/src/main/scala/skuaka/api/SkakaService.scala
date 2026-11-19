@@ -19,36 +19,19 @@ import scala.concurrent.duration.*
  * skaka の API を、各ユーザーが許可したトークン（暗号化して保存）で呼ぶ（docs は skaka の docs/skuaka-integration.md）.
  * 401 はトークンの失効なので、保存したトークンを消して「連携が切れた」と扱う.
  */
-final class SkakaService(
-  val cfg: SkakaConfig,
-  http: Client[IO],
-  val store: IntegrationStore,
-  box: SecretBox) {
+final class SkakaService(val cfg: SkakaConfig, http: Client[IO], val store: IntegrationStore, box: SecretBox) {
 
   val Provider = "skaka"
 
-  private def api(
-    path: String
-  ): Uri = Uri.unsafeFromString(cfg.internalUrl.stripSuffix("/") + path)
+  private def api(path: String): Uri = Uri.unsafeFromString(cfg.internalUrl.stripSuffix("/") + path)
   private def basic = Authorization(BasicCredentials(cfg.clientId, cfg.clientSecret))
-  private def bearer(
-    t: String
-  ) = Authorization(Credentials.Token(AuthScheme.Bearer, t))
+  private def bearer(t: String) = Authorization(Credentials.Token(AuthScheme.Bearer, t))
 
-  def token(
-    uid: UUID
-  ): IO[Option[String]] = store.token(uid, Provider).map(_.flatMap(box.decrypt))
-  def connected(
-    uid: UUID
-  ): IO[Boolean] = token(uid).map(_.isDefined)
+  def token(uid: UUID): IO[Option[String]] = store.token(uid, Provider).map(_.flatMap(box.decrypt))
+  def connected(uid: UUID): IO[Boolean] = token(uid).map(_.isDefined)
 
   /** 認可コードをトークンに替えて保存する. */
-  def exchange(
-    uid: UUID,
-    code: String,
-    verifier: String,
-    redirectUri: String
-  ): IO[Boolean] = {
+  def exchange(uid: UUID, code: String, verifier: String, redirectUri: String): IO[Boolean] = {
     val form = UrlForm(
       "grant_type" -> "authorization_code",
       "code" -> code,
@@ -64,32 +47,19 @@ final class SkakaService(
   }
 
   /** 連携をやめる（skaka のトークンも失効させる. skaka に届かなくても、こちらでは消す）. */
-  def disconnect(
-    uid: UUID
-  ): IO[Unit] =
+  def disconnect(uid: UUID): IO[Unit] =
     token(uid).flatMap(_.traverse_ { t =>
       http.run(Request[IO](Method.POST, api("/oauth/revoke")).withEntity(UrlForm("token" -> t)).putHeaders(basic))
         .use(_ => IO.unit).timeout(10.seconds).handleError(_ => ())
     }) *> store.deleteToken(uid, Provider)
 
   /** トークンで呼ぶ. 401 なら連携を外して Left. op は観測（スパン・メトリクス）での呼び出しの名前. */
-  private def call[A](
-    op: String,
-    uid: UUID,
-    req: Request[IO]
-  )(
-    ok: Response[IO] => IO[A]
-  ): IO[Either[String, A]] =
+  private def call[A](op: String, uid: UUID, req: Request[IO])(ok: Response[IO] => IO[A]): IO[Either[String, A]] =
     sbirds.observe.Telemetry.span("skaka.call", "op" -> op)(callImpl(uid, req)(ok)).flatTap(r =>
       sbirds.observe.Metrics.count("skuaka.skaka.calls", "op" -> op, "result" -> (if r.isRight then "ok" else "error"))
     )
 
-  private def callImpl[A](
-    uid: UUID,
-    req: Request[IO]
-  )(
-    ok: Response[IO] => IO[A]
-  ): IO[Either[String, A]] =
+  private def callImpl[A](uid: UUID, req: Request[IO])(ok: Response[IO] => IO[A]): IO[Either[String, A]] =
     token(uid).flatMap {
       case None => IO.pure(Left("skaka と連携していません。設定の画面で連携してください"))
       case Some(t) =>
@@ -105,10 +75,7 @@ final class SkakaService(
     }
 
   /** 会議室を作り、その URL を返す（名前は予定のタイトル. 100文字まで）. */
-  def createRoom(
-    uid: UUID,
-    ev: SkakaEvent
-  ): IO[Either[String, String]] = {
+  def createRoom(uid: UUID, ev: SkakaEvent): IO[Either[String, String]] = {
     val body = Json.obj(
       "name" -> ev.title.take(100).asJson,
       "description" -> "".asJson,
@@ -123,18 +90,12 @@ final class SkakaService(
   }
 
   /** 会議室に結び付けた予定の写しを変える（タイトル・日時を変えたとき）. */
-  def updateEvent(
-    uid: UUID,
-    code: String,
-    ev: SkakaEvent
-  ): IO[Either[String, Unit]] =
+  def updateEvent(uid: UUID, code: String, ev: SkakaEvent): IO[Either[String, Unit]] =
     call("room.event.update", uid, Request[IO](Method.PUT, api(s"/api/rooms/$code/event")).withEntity(eventJson(ev)))(
       _ => IO.unit
     )
 
-  private def eventJson(
-    ev: SkakaEvent
-  ): Json = Json.obj(
+  private def eventJson(ev: SkakaEvent): Json = Json.obj(
     "eventId" -> ev.eventId.asJson,
     "title" -> ev.title.asJson,
     "start" -> ev.start.asJson,

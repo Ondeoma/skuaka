@@ -11,22 +11,18 @@ import scala.util.Try
  * 繰り返しの一部の回だけを変えたもの（RECURRENCE-ID）は、元の予定から除いて別の予定にする（uid は「元の UID#その回」）.
  * approximated は、skuaka で表せない繰り返しの指定（BYYEARDAY・BYWEEKNO・BYHOUR など）を省いたもの.
  */
-final case class ParsedEvent(
-  uid: String,
-  title: String,
-  description: String,
-  location: String,
-  span: Span,
-  zone: ZoneId,
-  rule: Option[Recurrence],
-  exdates: List[String],
-  approximated: Boolean)
+final case class ParsedEvent(uid: String,
+                             title: String,
+                             description: String,
+                             location: String,
+                             span: Span,
+                             zone: ZoneId,
+                             rule: Option[Recurrence],
+                             exdates: List[String],
+                             approximated: Boolean)
 
 /** 読み取った結果. name は X-WR-CALNAME（カレンダーの名前）、skipped は読み取れなかった予定の数. */
-final case class ParsedCalendar(
-  name: Option[String],
-  events: List[ParsedEvent],
-  skipped: Int)
+final case class ParsedCalendar(name: Option[String], events: List[ParsedEvent], skipped: Int)
 
 /** iCalendar の読み取り（Google カレンダー・Outlook・Apple のカレンダーなどが書き出したもの）. */
 object IcsParse {
@@ -56,28 +52,19 @@ object IcsParse {
   )
 
   /** 1行のプロパティ（名前・パラメータ・値）. */
-  final case class Prop(
-    name: String,
-    params: Map[String, String],
-    value: String) {
-    def param(
-      k: String
-    ): Option[String] = params.get(k)
+  final case class Prop(name: String, params: Map[String, String], value: String) {
+    def param(k: String): Option[String] = params.get(k)
   }
 
   /** 折り返し（行頭の空白・タブ）を戻す. */
-  def unfold(
-    text: String
-  ): List[String] =
+  def unfold(text: String): List[String] =
     text.stripPrefix("﻿").replace(
       "\r\n",
       "\n"
     ).replace("\r", "\n").replaceAll("\n[ \t]", "").split('\n').toList.filter(_.nonEmpty)
 
   /** 「NAME;P1=a;P2="b:c":値」を読む（引用符の中の : ; は区切りにしない）. */
-  def prop(
-    line: String
-  ): Option[Prop] = {
+  def prop(line: String): Option[Prop] = {
     var i = 0
     var quoted = false
     var colon = -1
@@ -100,10 +87,7 @@ object IcsParse {
     }
   }
 
-  private def splitUnquoted(
-    s: String,
-    sep: Char
-  ): List[String] = {
+  private def splitUnquoted(s: String, sep: Char): List[String] = {
     val out = List.newBuilder[String]
     val cur = new StringBuilder
     var quoted = false
@@ -117,9 +101,7 @@ object IcsParse {
   }
 
   /** TEXT の値の \n・\,・\;・\\ を戻す. */
-  def unescape(
-    s: String
-  ): String = {
+  def unescape(s: String): String = {
     val out = new StringBuilder
     var i = 0
     while i < s.length do {
@@ -139,9 +121,7 @@ object IcsParse {
   }
 
   /** TZID からタイムゾーン（IANA の名前・Windows の名前. 分からなければ None）. */
-  def zoneOf(
-    tzid: String
-  ): Option[ZoneId] = {
+  def zoneOf(tzid: String): Option[ZoneId] = {
     val id = tzid.trim.stripPrefix("/")
     Time.zone(id).orElse(windowsZones.get(id).flatMap(Time.zone)).orElse {
       // 「/mozilla.org/20050126_1/Asia/Tokyo」のような接頭辞の付いたもの
@@ -158,21 +138,14 @@ object IcsParse {
       d: LocalDate)
     case At(
       i: Instant,
-      zone: Option[ZoneId]) // zone は TZID か浮動の時刻で決めたもの（UTC の Z なら None）
+      zone: Option[ZoneId]
+    ) // zone は TZID か浮動の時刻で決めたもの（UTC の Z なら None）
   }
 
   /** DTSTART などの値を読む. 浮動の時刻（Z も TZID もない）は fallback のタイムゾーンで読む. */
-  def when(
-    p: Prop,
-    fallback: ZoneId
-  ): Option[When] = when(p.value.trim, p.param("VALUE"), p.param("TZID"), fallback)
+  def when(p: Prop, fallback: ZoneId): Option[When] = when(p.value.trim, p.param("VALUE"), p.param("TZID"), fallback)
 
-  def when(
-    v: String,
-    valueType: Option[String],
-    tzid: Option[String],
-    fallback: ZoneId
-  ): Option[When] =
+  def when(v: String, valueType: Option[String], tzid: Option[String], fallback: ZoneId): Option[When] =
     if valueType.exists(_.equalsIgnoreCase("DATE")) || v.length == 8 then
       Try(LocalDate.parse(v.take(8), dateFmt)).toOption.map(When.Date(_))
     else if v.endsWith("Z") || v.endsWith("z") then
@@ -185,9 +158,7 @@ object IcsParse {
     }
 
   /** DURATION（P1D・PT1H30M・-PT15M など）. */
-  def duration(
-    v: String
-  ): Option[Duration] = {
+  def duration(v: String): Option[Duration] = {
     val s = v.trim.toUpperCase
     val (neg, body) = if s.startsWith("-") then (true, s.drop(1)) else (false, s.stripPrefix("+"))
     val weeks = "^P(\\d+)W$".r
@@ -206,24 +177,14 @@ object IcsParse {
   }
 
   /** 1つの VEVENT のプロパティ. */
-  private final case class Raw(
-    props: List[Prop]) {
-    def get(
-      name: String
-    ): Option[Prop] = props.find(_.name == name)
-    def all(
-      name: String
-    ): List[Prop] = props.filter(_.name == name)
-    def text(
-      name: String
-    ): String = get(name).map(p => unescape(p.value).trim).getOrElse("")
+  private final case class Raw(props: List[Prop]) {
+    def get(name: String): Option[Prop] = props.find(_.name == name)
+    def all(name: String): List[Prop] = props.filter(_.name == name)
+    def text(name: String): String = get(name).map(p => unescape(p.value).trim).getOrElse("")
   }
 
   /** iCalendar の文字列を読む（VCALENDAR がなければ Left）. defaultZone は浮動の時刻と、タイムゾーンのない予定の繰り返しの基準. */
-  def parse(
-    text: String,
-    defaultZone: ZoneId
-  ): Either[String, ParsedCalendar] = {
+  def parse(text: String, defaultZone: ZoneId): Either[String, ParsedCalendar] = {
     val lines = unfold(text)
     if !lines.exists(_.trim.equalsIgnoreCase("BEGIN:VCALENDAR")) then Left("iCalendar（.ics）の形式ではありません")
     else {
@@ -266,15 +227,10 @@ object IcsParse {
     }
   }
 
-  private def cancelled(
-    r: Raw
-  ): Boolean = r.text("STATUS").equalsIgnoreCase("CANCELLED")
+  private def cancelled(r: Raw): Boolean = r.text("STATUS").equalsIgnoreCase("CANCELLED")
 
   /** 1つの予定を読む. 繰り返しの一部の回の変更なら、元の予定の UID とその回のキー（元の予定での開始）も返す. */
-  private def event(
-    r: Raw,
-    defaultZone: ZoneId
-  ): Option[(ParsedEvent, Option[(String, String)])] =
+  private def event(r: Raw, defaultZone: ZoneId): Option[(ParsedEvent, Option[(String, String)])] =
     for {
       uid <- Some(r.text("UID")).filter(_.nonEmpty)
       dtp <- r.get("DTSTART")
@@ -314,18 +270,13 @@ object IcsParse {
     }
 
   /** 繰り返しの1回のキー（Span.key と同じ: 時刻のある予定は UTC の日時、終日の予定は日付）. */
-  private def key(
-    w: When
-  ): String = w match {
+  private def key(w: When): String = w match {
     case When.Date(d) => d.toString
     case When.At(i, _) => i.toString
   }
 
   /** EXDATE を予定の種類に合わせたキーにする（時刻のある予定に日付だけの EXDATE は合わせられないので捨てる）. */
-  private def exKey(
-    span: Span,
-    w: When
-  ): Option[String] = (span, w) match {
+  private def exKey(span: Span, w: When): Option[String] = (span, w) match {
     case (Span.AllDay(_, _), When.Date(d)) => Some(d.toString)
     case (Span.AllDay(_, _), When.At(i, z)) => Some(i.atZone(z.getOrElse(ZoneOffset.UTC)).toLocalDate.toString)
     case (Span.Timed(_, _), When.At(i, _)) => Some(i.toString)
@@ -333,11 +284,7 @@ object IcsParse {
   }
 
   /** 開始と終わり（DTEND か DURATION. なければ終日は1日、時刻のある予定は開始と同じ）. 終日の予定の終わりはその日を含む. */
-  private def spanOf(
-    start: When,
-    end: Option[When],
-    dur: Option[Duration]
-  ): Option[Span] = start match {
+  private def spanOf(start: When, end: Option[When], dur: Option[Duration]): Option[Span] = start match {
     case When.Date(s) =>
       val e = end.collect { case When.Date(d) => d.minusDays(1) }
         .orElse(dur.map(d => s.plusDays(math.max(1L, d.toDays) - 1)))
@@ -349,10 +296,7 @@ object IcsParse {
   }
 
   /** RRULE を読む. UNTIL は予定のタイムゾーンの日付に直す. skuaka で表せない指定があれば、それを省いて近似（true）にする. */
-  def ruleOf(
-    v: String,
-    zone: ZoneId
-  ): (Option[Recurrence], Boolean) = {
+  def ruleOf(v: String, zone: ZoneId): (Option[Recurrence], Boolean) = {
     val kv = v.split(';').toList.flatMap(p =>
       p.split("=", 2) match {
         case Array(k, x) => Some(k.trim.toUpperCase -> x.trim)
@@ -363,23 +307,9 @@ object IcsParse {
       case When.Date(d) => d
       case When.At(i, _) => i.atZone(zone).toLocalDate
     }
-    val unsupported = kv.exists(
-      (
-        k,
-        _
-      ) => !Recurrence.supportedKeys.contains(k)
-    )
-    val base = kv.filter(
-      (
-        k,
-        _
-      ) => Recurrence.supportedKeys.contains(k) && k != "UNTIL"
-    ).map(
-      (
-        k,
-        x
-      ) => s"$k=$x"
-    ).mkString(";")
+    val unsupported = kv.exists((k, _) => !Recurrence.supportedKeys.contains(k))
+    val base =
+      kv.filter((k, _) => Recurrence.supportedKeys.contains(k) && k != "UNTIL").map((k, x) => s"$k=$x").mkString(";")
     val rule = Recurrence.parse(base).map(r => r.copy(until = until.map(_.toString))).flatMap(_.valid.toOption)
     (rule, unsupported && rule.isDefined)
   }

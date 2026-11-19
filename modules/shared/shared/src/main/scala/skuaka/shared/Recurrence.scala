@@ -13,23 +13,19 @@ import io.circe.derivation.{Configuration, ConfiguredDecoder}
  *  - until: 最後の日（yyyy-MM-dd. その日を含む）、count: 回数. どちらもなければ終わりなし
  * 省いた項目は既定の値になる（API で古い形の JSON を送ってもよい）.
  */
-final case class Recurrence(
-  freq: String,
-  interval: Int = 1,
-  byDay: List[String] = Nil,
-  until: Option[String] = None,
-  count: Option[Int] = None,
-  byMonthDay: List[Int] = Nil,
-  byMonth: List[Int] = Nil,
-  bySetPos: List[Int] = Nil)
+final case class Recurrence(freq: String,
+                            interval: Int = 1,
+                            byDay: List[String] = Nil,
+                            until: Option[String] = None,
+                            count: Option[Int] = None,
+                            byMonthDay: List[Int] = Nil,
+                            byMonth: List[Int] = Nil,
+                            bySetPos: List[Int] = Nil)
   derives Encoder.AsObject {
 
   /** RRULE の値（FREQ=WEEKLY;BYDAY=MO,WE）. until は終日の予定と同じく日付で書く. */
   def toRrule: String = {
-    def list(
-      name: String,
-      xs: List[Any]
-    ) = Option.when(xs.nonEmpty)(s"$name=${xs.mkString(",")}")
+    def list(name: String, xs: List[Any]) = Option.when(xs.nonEmpty)(s"$name=${xs.mkString(",")}")
     val parts = List(
       Some(s"FREQ=$freq"),
       Option.when(interval > 1)(s"INTERVAL=$interval"),
@@ -114,9 +110,7 @@ object Recurrence {
   val DayNames: Map[String, String] = Days.zip(List("月", "火", "水", "木", "金", "土", "日")).toMap
 
   /** "2TU" → Some((Some(2), 2)) （第何週か、ISO の曜日 1〜7）. 毎年の繰り返しでは第53週まで. */
-  def parseDay(
-    s: String
-  ): Option[(Option[Int], Int)] = {
+  def parseDay(s: String): Option[(Option[Int], Int)] = {
     val code = s.takeRight(2)
     val n = s.dropRight(2).stripPrefix("+")
     val dow = Days.indexOf(code) + 1
@@ -126,46 +120,32 @@ object Recurrence {
   }
 
   /** 第何週の説明（-1 は最終、-2 は最後から2番目）. */
-  private def nth(
-    n: Int
-  ): String = if (n == -1) "最終" else if (n < 0) s"最後から${-n}番目の" else s"第$n"
+  private def nth(n: Int): String = if (n == -1) "最終" else if (n < 0) s"最後から${-n}番目の" else s"第$n"
 
-  def describeDay(
-    s: String,
-    inYear: Boolean = false
-  ): String = parseDay(s) match {
+  def describeDay(s: String, inYear: Boolean = false): String = parseDay(s) match {
     case Some((None, d)) => DayNames(Days(d - 1)) + "曜日"
     case Some((Some(n), d)) => (if (inYear) "年の" else "") + nth(n) + DayNames(Days(d - 1)) + "曜日"
     case None => s
   }
 
   /** 日にちの説明（-1 は末日）. */
-  def describeMonthDay(
-    d: Int
-  ): String = if (d == -1) "末日" else if (d < 0) s"末日の${-d - 1}日前" else s"${d}日"
+  def describeMonthDay(d: Int): String = if (d == -1) "末日" else if (d < 0) s"末日の${-d - 1}日前" else s"${d}日"
 
   /** 日にちを月の中の順に（1日〜31日、そのあとに末日に近いもの）. */
-  def sortedMonthDays(
-    ds: List[Int]
-  ): List[Int] = ds.filter(_ > 0).sorted ++ ds.filter(_ < 0).sorted
+  def sortedMonthDays(ds: List[Int]): List[Int] = ds.filter(_ > 0).sorted ++ ds.filter(_ < 0).sorted
 
-  def describePos(
-    p: Int
-  ): String = if (p == -1) "最後" else if (p < 0) s"最後から${-p}番目" else s"${p}番目"
+  def describePos(p: Int): String = if (p == -1) "最後" else if (p < 0) s"最後から${-p}番目" else s"${p}番目"
 
   /** RRULE の値を読む（知らない項目は無視する）. */
-  def parse(
-    rrule: String
-  ): Option[Recurrence] = {
+  def parse(rrule: String): Option[Recurrence] = {
     val kv = rrule.stripPrefix("RRULE:").split(';').toList.flatMap { p =>
       p.split('=') match {
         case Array(k, v) => Some(k.trim.toUpperCase -> v.trim)
         case _ => None
       }
     }.toMap
-    def ints(
-      k: String
-    ): List[Int] = kv.get(k).map(_.split(',').toList.flatMap(_.trim.stripPrefix("+").toIntOption)).getOrElse(Nil)
+    def ints(k: String): List[Int] =
+      kv.get(k).map(_.split(',').toList.flatMap(_.trim.stripPrefix("+").toIntOption)).getOrElse(Nil)
     kv.get("FREQ").map(_.toUpperCase).filter(freqs.contains).map { f =>
       Recurrence(
         freq = f,

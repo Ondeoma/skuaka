@@ -9,9 +9,7 @@ import java.net.{Inet4Address, Inet6Address, InetAddress, URI}
  * （社内のネットワーク・localhost・クラウドのメタデータ（169.254.169.254）などをサーバーから読ませない）.
  */
 trait UrlGuard {
-  def check(
-    uri: URI
-  ): IO[Either[String, Unit]]
+  def check(uri: URI): IO[Either[String, Unit]]
 }
 
 object UrlGuard {
@@ -29,9 +27,7 @@ object UrlGuard {
   val allowAll: UrlGuard = _ => IO.pure(Right(()))
 
   /** 内部・特別な用途のアドレスか. */
-  def blocked(
-    a: InetAddress
-  ): Boolean = {
+  def blocked(a: InetAddress): Boolean = {
     val b = a.getAddress.map(_ & 0xff)
     a.isLoopbackAddress || a.isAnyLocalAddress || a.isLinkLocalAddress || a.isSiteLocalAddress ||
     a.isMulticastAddress ||

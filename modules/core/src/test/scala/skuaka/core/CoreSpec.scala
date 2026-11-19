@@ -8,21 +8,13 @@ class CoreSpec extends munit.FunSuite {
 
   private val tokyo = ZoneId.of("Asia/Tokyo")
   private val ny = ZoneId.of("America/New_York")
-  private def at(
-    d: String,
-    t: String,
-    z: ZoneId
-  ) = LocalDateTime.parse(s"${d}T$t").atZone(z).toInstant
-  private def days(
-    xs: List[Span]
-  ) = xs.map {
+  private def at(d: String, t: String, z: ZoneId) = LocalDateTime.parse(s"${d}T$t").atZone(z).toInstant
+  private def days(xs: List[Span]) = xs.map {
     case Span.AllDay(s, _) => s.toString
     case Span.Timed(s, _) => s.atZone(tokyo).toLocalDate.toString
   }
-  private def range(
-    a: String,
-    b: String
-  ) = (LocalDate.parse(a).atStartOfDay(tokyo).toInstant, LocalDate.parse(b).atStartOfDay(tokyo).toInstant)
+  private def range(a: String, b: String) =
+    (LocalDate.parse(a).atStartOfDay(tokyo).toInstant, LocalDate.parse(b).atStartOfDay(tokyo).toInstant)
 
   test("RRULE の読み書き") {
     val r = Recurrence(Recurrence.Weekly, 2, List("MO", "WE"), Some("2026-12-31"), None)
@@ -188,11 +180,7 @@ class ExpandSkipSpec extends munit.FunSuite {
 
   // ---------------------------------------------------------------- BYMONTHDAY・BYMONTH・BYSETPOS
 
-  private def dates(
-    start: String,
-    rrule: String,
-    n: Int = 6
-  ): List[String] = {
+  private def dates(start: String, rrule: String, n: Int = 6): List[String] = {
     val r = Recurrence.parse(rrule).flatMap(_.valid.toOption).getOrElse(fail(s"読めない: $rrule"))
     val d = LocalDate.parse(start)
     Expand.all(Span.AllDay(d, d), tokyo, r).take(n).toList.map {

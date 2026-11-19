@@ -23,11 +23,8 @@ import scala.util.Try
  * 認証は API トークン（Bearer）だけ. 各ツールは REST API をそのトークンで内部から呼ぶので、権限は REST API と同じになる.
  * 日時はトークンの持ち主のタイムゾーンで読み書きする（オフセット付きの ISO 8601 も受け付ける）.
  */
-final class McpRoutes(
-  api: HttpRoutes[IO],
-  sessions: SessionAuth,
-  publicUrl: String,
-  version: String) extends Http4sDsl[IO] {
+final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: String, version: String)
+  extends Http4sDsl[IO] {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ POST -> Root / "mcp" => postMcp(req)
@@ -35,9 +32,7 @@ final class McpRoutes(
     case GET -> Root / "api" / "endpoints" => getEndpoints()
   }
 
-  private def postMcp(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postMcp(req: Request[IO]): IO[Response[IO]] =
     req.headers.get[Authorization] match {
       case Some(auth @ Authorization(Credentials.Token(AuthScheme.Bearer, _))) =>
         sessions.fromRequest(Request[IO](Method.POST, Uri.unsafeFromString("/mcp")).putHeaders(auth)).flatMap {
@@ -74,13 +69,8 @@ final class McpRoutes(
 
   // ------------------------------------------------------------------ REST API の内部呼び出し
 
-  private final class Caller(
-    auth: Authorization) {
-    def apply(
-      method: Method,
-      uri: Uri,
-      body: Option[Json] = None
-    ): IO[Either[String, Json]] = {
+  private final class Caller(auth: Authorization) {
+    def apply(method: Method, uri: Uri, body: Option[Json] = None): IO[Either[String, Json]] = {
       val req0 = Request[IO](method, uri).putHeaders(auth)
       val req = body.fold(req0)(req0.withEntity(_))
       api.run(req).value.flatMap {
@@ -95,44 +85,31 @@ final class McpRoutes(
     }
 
     /** 呼んで、結果を型に読む. */
-    def as[A: Decoder](
-      method: Method,
-      uri: Uri,
-      body: Option[Json] = None
-    ): IO[Either[String, A]] =
+    def as[A: Decoder](method: Method, uri: Uri, body: Option[Json] = None): IO[Either[String, A]] =
       apply(method, uri, body).map(_.flatMap(_.as[A].left.map(e => s"応答を読めません: ${e.getMessage}")))
   }
 
-  private def path(
-    segments: String*
-  ): Uri = Uri(path = Uri.Path(segments.toVector.map(Uri.Path.Segment(_)), absolute = true))
+  private def path(segments: String*): Uri =
+    Uri(path = Uri.Path(segments.toVector.map(Uri.Path.Segment(_)), absolute = true))
 
   // ------------------------------------------------------------------ 日時
 
   /** トークンの持ち主と、そのタイムゾーン. */
-  private final case class Ctx(
-    call: Caller,
-    me: MeDto) {
+  private final case class Ctx(call: Caller, me: MeDto) {
     val zone: ZoneId = Time.zone(me.timezone).getOrElse(ZoneId.of("Asia/Tokyo"))
     def today: LocalDate = LocalDate.now(zone)
   }
 
   private val dayNames = Vector("月", "火", "水", "木", "金", "土", "日")
-  private def dayText(
-    d: LocalDate
-  ): String = f"${d.getYear}%d/${d.getMonthValue}%02d/${d.getDayOfMonth}%02d(${dayNames(d.getDayOfWeek.getValue - 1)})"
+  private def dayText(d: LocalDate): String =
+    f"${d.getYear}%d/${d.getMonthValue}%02d/${d.getDayOfMonth}%02d(${dayNames(d.getDayOfWeek.getValue - 1)})"
   private val hm = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
 
-  private def date(
-    s: String
-  ): Either[String, LocalDate] =
+  private def date(s: String): Either[String, LocalDate] =
     Try(LocalDate.parse(s.trim.take(10))).toEither.left.map(_ => s"日付は yyyy-MM-dd で指定してください: $s")
 
   /** 日時（2026-11-16T10:00、2026-11-16 10:00、オフセット付き）を UTC にする. 時刻だけ省いたら 0:00. */
-  private def instant(
-    s: String,
-    zone: ZoneId
-  ): Either[String, Instant] = {
+  private def instant(s: String, zone: ZoneId): Either[String, Instant] = {
     val t = s.trim.replace(' ', 'T')
     Time.instant(t)
       .orElse(Try(LocalDateTime.parse(t).atZone(zone).toInstant).toOption)
@@ -141,12 +118,7 @@ final class McpRoutes(
   }
 
   /** 1回分の予定の日時の表示（トークンの持ち主のタイムゾーンで）. */
-  private def whenText(
-    allDay: Boolean,
-    start: String,
-    end: String,
-    zone: ZoneId
-  ): String =
+  private def whenText(allDay: Boolean, start: String, end: String, zone: ZoneId): String =
     if allDay then
       (Try(LocalDate.parse(start)).toOption, Try(LocalDate.parse(end)).toOption) match {
         case (Some(s), Some(e)) if s == e => s"${dayText(s)} 終日"
@@ -166,14 +138,11 @@ final class McpRoutes(
 
   private type Result = IO[Either[String, String]]
 
-  private final case class Tool(
-    name: String,
-    description: String,
-    schema: Json,
-    readOnly: Boolean,
-    destructive: Boolean = false
-  )(
-    val run: (Ctx, ACursor) => Result) {
+  private final case class Tool(name: String,
+                                description: String,
+                                schema: Json,
+                                readOnly: Boolean,
+                                destructive: Boolean = false)(val run: (Ctx, ACursor) => Result) {
     def json: Json = Json.obj(
       "name" -> name.asJson,
       "description" -> description.asJson,
@@ -186,70 +155,38 @@ final class McpRoutes(
     )
   }
 
-  private def schema(
-    required: List[String],
-    props: (String, Json)*
-  ): Json =
+  private def schema(required: List[String], props: (String, Json)*): Json =
     Json.obj("type" -> "object".asJson, "properties" -> Json.obj(props*), "required" -> required.asJson)
-  private def str(
-    d: String
-  ): Json = Json.obj("type" -> "string".asJson, "description" -> d.asJson)
-  private def int(
-    d: String
-  ): Json = Json.obj("type" -> "integer".asJson, "description" -> d.asJson)
-  private def bool(
-    d: String
-  ): Json = Json.obj("type" -> "boolean".asJson, "description" -> d.asJson)
-  private def strs(
-    d: String
-  ): Json =
+  private def str(d: String): Json = Json.obj("type" -> "string".asJson, "description" -> d.asJson)
+  private def int(d: String): Json = Json.obj("type" -> "integer".asJson, "description" -> d.asJson)
+  private def bool(d: String): Json = Json.obj("type" -> "boolean".asJson, "description" -> d.asJson)
+  private def strs(d: String): Json =
     Json.obj("type" -> "array".asJson, "items" -> Json.obj("type" -> "string".asJson), "description" -> d.asJson)
-  private def obj(
-    d: String
-  ): Json = Json.obj("type" -> "object".asJson, "description" -> d.asJson)
-  private def oneOf(
-    d: String,
-    vs: String*
-  ): Json = Json.obj("type" -> "string".asJson, "enum" -> vs.toList.asJson, "description" -> d.asJson)
+  private def obj(d: String): Json = Json.obj("type" -> "object".asJson, "description" -> d.asJson)
+  private def oneOf(d: String, vs: String*): Json =
+    Json.obj("type" -> "string".asJson, "enum" -> vs.toList.asJson, "description" -> d.asJson)
 
-  private def need(
-    a: ACursor,
-    k: String
-  ): Either[String, String] = opt(a, k).filter(_.nonEmpty).toRight(s"$k を指定してください")
-  private def opt(
-    a: ACursor,
-    k: String
-  ): Option[String] = a.get[String](k).toOption.map(_.trim)
-  private def uuid(
-    s: String
-  ): Either[String, UUID] = Try(UUID.fromString(s.trim)).toEither.left.map(_ => s"ID が正しくありません: $s")
+  private def need(a: ACursor, k: String): Either[String, String] =
+    opt(a, k).filter(_.nonEmpty).toRight(s"$k を指定してください")
+  private def opt(a: ACursor, k: String): Option[String] = a.get[String](k).toOption.map(_.trim)
+  private def uuid(s: String): Either[String, UUID] =
+    Try(UUID.fromString(s.trim)).toEither.left.map(_ => s"ID が正しくありません: $s")
 
   /** Either を IO の中でつなぐための小道具. */
-  private def lift[A](
-    e: Either[String, A]
-  ): IO[Either[String, A]] = IO.pure(e)
-  extension [A](
-    io: IO[Either[String, A]]
-  ) {
-    private def andThen[B](
-      f: A => IO[Either[String, B]]
-    ): IO[Either[String, B]] = io.flatMap(_.fold(e => IO.pure(Left(e)), f))
-    private def mapR[B](
-      f: A => B
-    ): IO[Either[String, B]] = io.map(_.map(f))
+  private def lift[A](e: Either[String, A]): IO[Either[String, A]] = IO.pure(e)
+  extension [A](io: IO[Either[String, A]]) {
+    private def andThen[B](f: A => IO[Either[String, B]]): IO[Either[String, B]] =
+      io.flatMap(_.fold(e => IO.pure(Left(e)), f))
+    private def mapR[B](f: A => B): IO[Either[String, B]] = io.map(_.map(f))
   }
 
   // ------------------------------------------------------------------ 名前から ID を引く
 
-  private def calendars(
-    c: Ctx
-  ): IO[Either[String, List[CalendarDto]]] = c.call.as[List[CalendarDto]](Method.GET, path("api", "calendars"))
+  private def calendars(c: Ctx): IO[Either[String, List[CalendarDto]]] =
+    c.call.as[List[CalendarDto]](Method.GET, path("api", "calendars"))
 
   /** カレンダーの指定（名前・ID. 省けば自分のメインのカレンダー）. */
-  private def calendar(
-    c: Ctx,
-    v: Option[String]
-  ): IO[Either[String, CalendarDto]] =
+  private def calendar(c: Ctx, v: Option[String]): IO[Either[String, CalendarDto]] =
     calendars(c).mapR { cs =>
       v.filter(_.nonEmpty) match {
         case None => cs.find(x => x.primary && x.owner.id == c.me.id).orElse(cs.headOption).toRight("カレンダーがありません")
@@ -260,10 +197,7 @@ final class McpRoutes(
     }.map(_.flatten)
 
   /** ユーザーの指定（メール・名前・ID）を ID にする. */
-  private def user(
-    c: Ctx,
-    v: String
-  ): IO[Either[String, UUID]] =
+  private def user(c: Ctx, v: String): IO[Either[String, UUID]] =
     uuid(v) match {
       case Right(id) => IO.pure(Right(id))
       case Left(_) =>
@@ -297,11 +231,7 @@ final class McpRoutes(
   )
 
   /** 予定の入力を、元（変更なら今の予定）に重ねて EventReq にする. */
-  private def eventReq(
-    c: Ctx,
-    a: ACursor,
-    base: Option[(EventDto, Option[String])]
-  ): IO[Either[String, EventReq]] = {
+  private def eventReq(c: Ctx, a: ACursor, base: Option[(EventDto, Option[String])]): IO[Either[String, EventReq]] = {
     val cur = base.map(_._1)
     val occ = base.flatMap(_._2)
     val start = opt(a, "start").filter(_.nonEmpty)
@@ -389,25 +319,13 @@ final class McpRoutes(
     )
   }
 
-  private def scopeQuery(
-    u: Uri,
-    a: ACursor
-  ): Uri =
+  private def scopeQuery(u: Uri, a: ACursor): Uri =
     List("scope" -> opt(a, "scope"), "occurrence" -> opt(a, "occurrence")).collect {
       case (k, Some(v)) if v.nonEmpty => k -> v
     }
-      .foldLeft(u)(
-        (
-          x,
-          kv
-        ) => x.withQueryParam(kv._1, kv._2)
-      )
+      .foldLeft(u)((x, kv) => x.withQueryParam(kv._1, kv._2))
 
-  private def occLine(
-    c: Ctx,
-    cals: Map[UUID, String],
-    o: OccurrenceDto
-  ): String = {
+  private def occLine(c: Ctx, cals: Map[UUID, String], o: OccurrenceDto): String = {
     val tags = List(
       Option.when(o.recurring)("繰り返し"),
       o.myResponse.filter(_ => o.invited || o.guests > 0).map(r => s"返事: ${Rsvp.label(r)}"),
@@ -420,33 +338,21 @@ final class McpRoutes(
       s" eventId=${o.eventId}${if o.recurring then s" occurrence=${o.occurrence}" else ""}"
   }
 
-  private def occurrences(
-    c: Ctx,
-    from: LocalDate,
-    to: LocalDate
-  ): IO[Either[String, List[OccurrenceDto]]] =
+  private def occurrences(c: Ctx, from: LocalDate, to: LocalDate): IO[Either[String, List[OccurrenceDto]]] =
     c.call.as[List[OccurrenceDto]](
       Method.GET,
       path("api", "events").withQueryParam("from", from.toString)
         .withQueryParam("to", to.plusDays(1).toString).withQueryParam("tz", c.zone.getId)
     )
 
-  private def range(
-    c: Ctx,
-    a: ACursor,
-    days: Int
-  ): Either[String, (LocalDate, LocalDate)] =
+  private def range(c: Ctx, a: ACursor, days: Int): Either[String, (LocalDate, LocalDate)] =
     for {
       f <- opt(a, "from").filter(_.nonEmpty).fold(Right(c.today))(date)
       t <- opt(a, "to").filter(_.nonEmpty).fold(Right(f.plusDays(days - 1)))(date)
       _ <- Either.cond(!t.isBefore(f) && ChronoUnit.DAYS.between(f, t) < 400, (), "to は from 以降で、400日以内にしてください")
     } yield (f, t)
 
-  private def eventText(
-    c: Ctx,
-    e: EventDto,
-    cals: Map[UUID, String]
-  ): String =
+  private def eventText(c: Ctx, e: EventDto, cals: Map[UUID, String]): String =
     List(
       Some(s"# ${e.title}"),
       Some(s"日時: ${whenText(e.allDay, e.start, e.end, c.zone)}${if e.recurrence.isDefined then "（最初の回）" else ""}"),
@@ -465,36 +371,28 @@ final class McpRoutes(
     ).flatten.mkString("\n")
 
   /** 場所（Web 会議の URL を含む）と、会議室を作れなかった理由. */
-  private def meetingText(
-    e: EventDto
-  ): String =
+  private def meetingText(e: EventDto): String =
     Option.when(e.location.nonEmpty)(s"\n場所: ${e.location}").getOrElse("") +
       e.meetingError.fold("")(m => s"\n※ $m（予定は保存しました）")
 
-  private def calNames(
-    c: Ctx
-  ): IO[Map[UUID, String]] = calendars(c).map(_.getOrElse(Nil).map(x => x.id -> x.name).toMap)
+  private def calNames(c: Ctx): IO[Map[UUID, String]] =
+    calendars(c).map(_.getOrElse(Nil).map(x => x.id -> x.name).toMap)
 
   // ------------------------------------------------------------------ 空き時間
 
-  private def hhmm(
-    s: Option[String],
-    d: LocalTime
-  ): Either[String, LocalTime] =
+  private def hhmm(s: Option[String], d: LocalTime): Either[String, LocalTime] =
     s.filter(_.nonEmpty).fold(Right(d))(x =>
       Try(LocalTime.parse(if x.length == 4 then "0" + x else x)).toEither.left.map(_ => s"時刻は HH:mm で指定してください: $x")
     )
 
-  private def freeSlots(
-    c: Ctx,
-    os: List[OccurrenceDto],
-    from: LocalDate,
-    to: LocalDate,
-    minutes: Int,
-    ds: LocalTime,
-    de: LocalTime,
-    weekends: Boolean
-  ): List[(ZonedDateTime, ZonedDateTime)] = {
+  private def freeSlots(c: Ctx,
+                        os: List[OccurrenceDto],
+                        from: LocalDate,
+                        to: LocalDate,
+                        minutes: Int,
+                        ds: LocalTime,
+                        de: LocalTime,
+                        weekends: Boolean): List[(ZonedDateTime, ZonedDateTime)] = {
     val busy = os.filterNot(_.allDay).filterNot(_.myResponse.contains(Rsvp.Declined))
       .flatMap(o => (Time.instant(o.start), Time.instant(o.end)).tupled).sortBy(_._1)
     val now = Instant.now()
@@ -504,28 +402,14 @@ final class McpRoutes(
         val s0 = d.atTime(ds).atZone(c.zone).toInstant
         val e0 = d.atTime(de).atZone(c.zone).toInstant
         val start = if now.isAfter(s0) then now.truncatedTo(ChronoUnit.MINUTES) else s0
-        val (slots, last) = busy.filter(
-          (
-            s,
-            e
-          ) => s.isBefore(e0) && e.isAfter(start)
-        ).foldLeft((List.empty[(Instant, Instant)], start)) {
-          case ((acc, cur), (s, e)) =>
-            (if s.isAfter(cur) then acc :+ (cur -> s) else acc, if e.isAfter(cur) then e else cur)
-        }
+        val (slots, last) =
+          busy.filter((s, e) => s.isBefore(e0) && e.isAfter(start)).foldLeft((List.empty[(Instant, Instant)], start)) {
+            case ((acc, cur), (s, e)) =>
+              (if s.isAfter(cur) then acc :+ (cur -> s) else acc, if e.isAfter(cur) then e else cur)
+          }
         (if e0.isAfter(last) then slots :+ (last -> e0) else slots)
-          .filter(
-            (
-              s,
-              e
-            ) => ChronoUnit.MINUTES.between(s, e) >= minutes
-          )
-          .map(
-            (
-              s,
-              e
-            ) => (s.atZone(c.zone), e.atZone(c.zone))
-          )
+          .filter((s, e) => ChronoUnit.MINUTES.between(s, e) >= minutes)
+          .map((s, e) => (s.atZone(c.zone), e.atZone(c.zone)))
       }.toList
   }
 
@@ -538,19 +422,13 @@ final class McpRoutes(
 
   private val tools: List[Tool] = List(
     Tool("get_me", "自分（この API トークンの持ち主）の情報とタイムゾーン、今日の日付.", schema(Nil), readOnly = true) {
-      (
-        c,
-        _
-      ) =>
+      (c, _) =>
         IO.pure(Right(
           s"${c.me.name}${c.me.email.fold("")(m => s" <$m>")}\nタイムゾーン: ${c.me.timezone}\n今日: ${dayText(c.today)}\n今: ${ZonedDateTime.now(c.zone).format(hm)}\nuserId=${c.me.id}"
         ))
     },
     Tool("list_calendars", "見られるカレンダーの一覧（名前・自分の権限・所有者）.", schema(Nil), readOnly = true) {
-      (
-        c,
-        _
-      ) =>
+      (c, _) =>
         calendars(c).mapR(_.map(x =>
           s"- ${x.name}${if x.primary then "（メイン）" else ""}: ${CalRole.label(x.role)}、所有者 ${x.owner.name}" +
             s"${if x.viaTeam then "、チームに公開" else ""}${if x.visible then "" else "、非表示"} id=${x.id}"
@@ -562,10 +440,7 @@ final class McpRoutes(
       schema(Nil, "query" -> str("持ち主の名前・メールアドレス、カレンダーの名前（省けばすべて）")),
       readOnly = true
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         c.call.as[List[TeamCalendarDto]](
           Method.GET,
           path("api", "team", "calendars").withQueryParam("q", opt(a, "query").getOrElse(""))
@@ -585,10 +460,7 @@ final class McpRoutes(
       schema(List("calendarId"), "calendarId" -> str("カレンダーの ID")),
       readOnly = false
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         lift(need(a, "calendarId").flatMap(uuid)).andThen(id =>
           c.call.as[CalendarDto](Method.POST, path("api", "team", "calendars", id.toString)).mapR(x =>
             s"「${x.name}」（${x.owner.name}）を一覧に加えました"
@@ -606,27 +478,16 @@ final class McpRoutes(
       ),
       readOnly = true
     ) {
-      (
-        c,
-        a
-      ) =>
-        lift(range(c, a, 7)).andThen(
-          (
-            f,
-            t
-          ) =>
-            opt(a, "calendar").filter(_.nonEmpty).traverse(v => calendar(c, Some(v))).map(_.sequence).andThen(only =>
-              (occurrences(c, f, t), calNames(c)).tupled.map(
-                (
-                  r,
-                  names
-                ) =>
-                  r.map { os =>
-                    val xs = os.filter(o => only.forall(_.id == o.calendarId))
-                    (s"${dayText(f)}〜${dayText(t)}: ${xs.size}件" :: xs.map(occLine(c, names, _))).mkString("\n")
-                  }
-              )
+      (c, a) =>
+        lift(range(c, a, 7)).andThen((f, t) =>
+          opt(a, "calendar").filter(_.nonEmpty).traverse(v => calendar(c, Some(v))).map(_.sequence).andThen(only =>
+            (occurrences(c, f, t), calNames(c)).tupled.map((r, names) =>
+              r.map { os =>
+                val xs = os.filter(o => only.forall(_.id == o.calendarId))
+                (s"${dayText(f)}〜${dayText(t)}: ${xs.size}件" :: xs.map(occLine(c, names, _))).mkString("\n")
+              }
             )
+          )
         )
     },
     Tool(
@@ -635,10 +496,7 @@ final class McpRoutes(
       schema(List("query"), "query" -> str("探す語")),
       readOnly = true
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         lift(need(a, "query")).andThen(q =>
           (
             c.call.as[List[OccurrenceDto]](
@@ -647,12 +505,7 @@ final class McpRoutes(
             ),
             calNames(c)
           ).tupled
-            .map(
-              (
-                r,
-                names
-              ) => r.map(os => (s"${os.size}件" :: os.map(occLine(c, names, _))).mkString("\n"))
-            )
+            .map((r, names) => r.map(os => (s"${os.size}件" :: os.map(occLine(c, names, _))).mkString("\n")))
         )
     },
     Tool(
@@ -661,24 +514,15 @@ final class McpRoutes(
       schema(List("eventId"), "eventId" -> str("予定の ID")),
       readOnly = true
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         lift(need(a, "eventId").flatMap(uuid)).andThen(id =>
-          (c.call.as[EventDto](Method.GET, path("api", "events", id.toString)), calNames(c)).tupled.map(
-            (
-              r,
-              names
-            ) => r.map(eventText(c, _, names))
+          (c.call.as[EventDto](Method.GET, path("api", "events", id.toString)), calNames(c)).tupled.map((r, names) =>
+            r.map(eventText(c, _, names))
           )
         )
     },
     Tool("create_event", "予定を作る. ゲストを入れると招待される.", schema(List("title", "start"), eventProps*), readOnly = false) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         eventReq(c, a, None).andThen(r =>
           c.call.as[EventDto](Method.POST, path("api", "events"), Some(r.asJson))
             .mapR(e =>
@@ -692,10 +536,7 @@ final class McpRoutes(
       schema(List("eventId"), (("eventId" -> str("予定の ID")) :: occurrenceProps ++ eventProps)*),
       readOnly = false
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         lift(need(a, "eventId").flatMap(uuid)).andThen(id =>
           c.call.as[EventDto](Method.GET, path("api", "events", id.toString)).andThen { cur =>
             val occ = opt(a, "occurrence").filter(_.nonEmpty).filter(_ => cur.recurrence.isDefined)
@@ -721,10 +562,7 @@ final class McpRoutes(
       readOnly = false,
       destructive = true
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         lift(need(a, "eventId").flatMap(uuid)).andThen(id =>
           c.call(Method.DELETE, scopeQuery(path("api", "events", id.toString), a)).mapR(_ => "削除しました")
         )
@@ -739,10 +577,7 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         (
           need(a, "eventId").flatMap(uuid),
           need(a, "response").filterOrElse(Rsvp.all.contains, "response は accepted / declined / tentative です")
@@ -773,10 +608,7 @@ final class McpRoutes(
       ),
       readOnly = true
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         (
           range(c, a, 5),
           a.get[Int]("durationMinutes").toOption.filter(m => m > 0 && m <= 1440).toRight("durationMinutes は 1〜1440 です"),
@@ -787,10 +619,7 @@ final class McpRoutes(
           case Right(((f, t), m, ds, de)) =>
             a.downField("people").as[List[String]].getOrElse(Nil).traverse(user(c, _)).map(_.sequence).andThen(people =>
               (occurrences(c, f, t), calendars(c)).tupled.map(_.tupled).mapR {
-                (
-                  os,
-                  cs
-                ) =>
+                (os, cs) =>
                   val owner = cs.map(x => x.id -> x.owner.id).toMap
                   val who = (c.me.id :: people).toSet
                   // 自分: 自分のカレンダーと招待された予定. ほかの人: その人のカレンダーの予定
@@ -803,11 +632,8 @@ final class McpRoutes(
                   val body =
                     if slots.isEmpty then s"${dayText(f)}〜${dayText(t)} に ${m}分の空きはありません"
                     else
-                      (s"${m}分以上の空き（${c.zone.getId}）:" :: slots.map(
-                        (
-                          s,
-                          e
-                        ) => s"- ${dayText(s.toLocalDate)} ${s.format(hm)}–${e.format(hm)}"
+                      (s"${m}分以上の空き（${c.zone.getId}）:" :: slots.map((s, e) =>
+                        s"- ${dayText(s.toLocalDate)} ${s.format(hm)}–${e.format(hm)}"
                       )).mkString("\n")
                   (body :: note.toList).mkString("\n")
               }
@@ -820,10 +646,7 @@ final class McpRoutes(
       schema(Nil),
       readOnly = true
     ) {
-      (
-        _,
-        _
-      ) =>
+      (_, _) =>
         IO.pure(Right(ApiCatalog.all.map(e => s"${e.method} ${e.path} — ${e.description}").mkString("\n")))
     },
     Tool(
@@ -837,10 +660,7 @@ final class McpRoutes(
       ),
       readOnly = false
     ) {
-      (
-        c,
-        a
-      ) =>
+      (c, a) =>
         (need(a, "method").map(_.toUpperCase), need(a, "path")).tupled match {
           case Left(e) => IO.pure(Left(e))
           case Right((m, p)) =>
@@ -863,29 +683,16 @@ final class McpRoutes(
 
   // ------------------------------------------------------------------ JSON-RPC
 
-  private def ok(
-    id: Json,
-    result: Json
-  ): Json = Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "result" -> result)
-  private def rpcFail(
-    id: Json,
-    code: Int,
-    msg: String
-  ): Json =
+  private def ok(id: Json, result: Json): Json = Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "result" -> result)
+  private def rpcFail(id: Json, code: Int, msg: String): Json =
     Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id, "error" -> Json.obj("code" -> code.asJson, "message" -> msg.asJson))
-  private def toolResult(
-    r: Either[String, String]
-  ): Json =
+  private def toolResult(r: Either[String, String]): Json =
     Json.obj(
       "content" -> Json.arr(Json.obj("type" -> "text".asJson, "text" -> r.merge.asJson)),
       "isError" -> r.isLeft.asJson
     )
 
-  private def handle(
-    call: Caller,
-    p: Principal,
-    msg: Json
-  ): IO[Option[Json]] = {
+  private def handle(call: Caller, p: Principal, msg: Json): IO[Option[Json]] = {
     val c = msg.hcursor
     val params = c.downField("params")
     c.downField("id").focus match {

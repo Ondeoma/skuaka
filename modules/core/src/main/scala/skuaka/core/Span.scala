@@ -19,9 +19,7 @@ enum Span {
   }
 
   /** 表示するタイムゾーンでの、開始と終わり（終わりを含まない）の日時. */
-  def bounds(
-    view: ZoneId
-  ): (Instant, Instant) = this match {
+  def bounds(view: ZoneId): (Instant, Instant) = this match {
     case Timed(s, e) => (s, e)
     case AllDay(s, e) => (s.atStartOfDay(view).toInstant, e.plusDays(1).atStartOfDay(view).toInstant)
   }
@@ -40,11 +38,7 @@ enum Span {
 object Span {
 
   /** API の文字列から作る（終日なら yyyy-MM-dd、そうでなければ ISO 8601 の日時）. */
-  def parse(
-    allDay: Boolean,
-    start: String,
-    end: String
-  ): Either[String, Span] =
+  def parse(allDay: Boolean, start: String, end: String): Either[String, Span] =
     if allDay then
       (Try(LocalDate.parse(start.take(10))).toOption, Try(LocalDate.parse(end.take(10))).toOption) match {
         case (Some(s), Some(e)) if !e.isBefore(s) => Right(AllDay(s, e))

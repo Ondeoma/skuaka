@@ -18,17 +18,10 @@ import scala.concurrent.duration.*
  *  - リマインダー: 予定に付けた通知（何分前）の時刻に、カレンダーの所有者・共有された人・ゲストへ（欠席の人を除く）.
  *    複数ノードで動いても、reminder_sent に先に印を付けたノードだけが送る
  */
-final class EventNotifier(
-  events: EventStore,
-  users: UserStore,
-  push: PushService) {
+final class EventNotifier(events: EventStore, users: UserStore, push: PushService) {
 
   /** 招待した人へ知らせる（失敗しても予定の保存は止めない）. */
-  def invited(
-    by: User,
-    id: UUID,
-    guests: List[UUID]
-  ): IO[Unit] =
+  def invited(by: User, id: UUID, guests: List[UUID]): IO[Unit] =
     IO.whenA(guests.nonEmpty) {
       Telemetry.span("event.invite", "event.id" -> id.toString)(events.get(id).flatMap(_.traverse_ { r =>
         guests.traverse_(g =>
@@ -43,9 +36,7 @@ final class EventNotifier(
 
   /** リマインダーを送る裏の処理（30秒ごと. 起動より前の時刻の分は送らない）. */
   def reminderLoop: IO[Nothing] = {
-    def go(
-      last: Instant
-    ): IO[Nothing] =
+    def go(last: Instant): IO[Nothing] =
       IO.sleep(30.seconds) *> IO.realTimeInstant.flatMap { now =>
         Telemetry.span("reminder.scan")(scan(last, now)).handleErrorWith(e =>
           Log.report(ErrorCode.ReminderScanFailed, e.toString, e)
@@ -55,10 +46,7 @@ final class EventNotifier(
   }
 
   /** (last, now] に通知の時刻が来た回を送る. */
-  private def scan(
-    last: Instant,
-    now: Instant
-  ): IO[Unit] =
+  private def scan(last: Instant, now: Instant): IO[Unit] =
     events.overlapping(last, now.plusSeconds(Reminders.MaxMinutes * 60L + 60), timedWithReminders = true).flatMap {
       rows =>
         val due = for {
@@ -76,28 +64,15 @@ final class EventNotifier(
           at = o.bounds(r.zone)._1.minusSeconds(m * 60L)
           if at.isAfter(last) && !at.isAfter(now)
         } yield (r, o, m)
-        due.traverse_(
-          (
-            r,
-            o,
-            m
-          ) => events.markReminder(r.id, o.key, m).ifM(remind(r, o, m), IO.unit)
-        )
+        due.traverse_((r, o, m) => events.markReminder(r.id, o.key, m).ifM(remind(r, o, m), IO.unit))
     }
 
-  private def remind(
-    r: EventRow,
-    o: Span,
-    minutes: Int
-  ): IO[Unit] = {
+  private def remind(r: EventRow, o: Span, minutes: Int): IO[Unit] = {
     val when = if minutes == 0 then "" else s"（${Reminders.label(minutes).stripSuffix("前")}後）"
     // 画面を開いているときの通知（Store.reminders）と同じ tag にして、2つ出ないようにする
     val tag = s"${r.id}${o.key}-$minutes"
     events.reminderTargets(r.id, r.calendarId).flatMap(_.traverse_ {
-      (
-        uid,
-        tz
-      ) =>
+      (uid, tz) =>
         val zone = When.zone(tz)
         val body = s"${When.text(o, zone, Some(LocalDate.now(zone)))}〜$when" +
           (if r.location.nonEmpty then s"\n${r.location}" else "")

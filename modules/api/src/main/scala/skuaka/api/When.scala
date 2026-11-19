@@ -11,16 +11,10 @@ object When {
   private val dateFmt = DateTimeFormatter.ofPattern("M月d日（E）", Locale.JAPANESE)
   private val timeFmt = DateTimeFormatter.ofPattern("H:mm")
 
-  def zone(
-    tz: String
-  ): ZoneId = Time.zone(tz).getOrElse(ZoneId.of("Asia/Tokyo"))
+  def zone(tz: String): ZoneId = Time.zone(tz).getOrElse(ZoneId.of("Asia/Tokyo"))
 
   /** 「11月17日（火） 10:00」. today と同じ日なら日付を省く. 終日の予定は日付だけ. */
-  def text(
-    span: Span,
-    zone: ZoneId,
-    today: Option[LocalDate] = None
-  ): String = span match {
+  def text(span: Span, zone: ZoneId, today: Option[LocalDate] = None): String = span match {
     case Span.AllDay(s, e) => dateFmt.format(s) + (if e != s then s"〜${dateFmt.format(e)}" else "") + " 終日"
     case Span.Timed(s, _) =>
       val at = s.atZone(zone)
