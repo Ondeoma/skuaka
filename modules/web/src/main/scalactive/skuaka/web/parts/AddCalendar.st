@@ -64,7 +64,7 @@ def pick(s: State, e: org.scalajs.dom.Event): Unit =
       <p><button type="submit" class="primary" :disabled="s.busy.v">{{ if (s.busy.v) "読み込んでいます…" else "購読する" }}</button></p>
     </form>
     <div v-if='s.tab.v == "file"'>
-      <p class="muted small">ほかのカレンダーから書き出した iCalendar（.ics）のファイルの予定を、skuaka のカレンダーに写します（一度だけ. 写したあとは skuaka の予定として変更できます）。
+      <p class="muted small">ほかのカレンダーから書き出した iCalendar（.ics）のファイルの予定を、{{ AppNames.self }} のカレンダーに写します（一度だけ. 写したあとは {{ AppNames.self }} の予定として変更できます）。
         同じファイルを取り込み直すと、重ならずに変わった予定だけを上書きします。Google カレンダーでは「設定」→「インポート/エクスポート」→「エクスポート」で書き出せます（ZIP を展開した .ics を選びます）。</p>
       <label class="field"><span>取り込み先</span>
         <select v-model="s.target"><option v-for="c in targets" :value="c.id.toString">{{ c.name }}</option></select>

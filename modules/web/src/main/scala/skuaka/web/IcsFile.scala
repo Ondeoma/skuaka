@@ -9,10 +9,16 @@ import java.util.UUID
 object IcsFile {
 
   /** ファイルの選択（input type=file の change）で選んだファイルを、カレンダーに取り込む. */
-  def importFrom(e: dom.Event, calId: UUID)(done: => Unit): Unit = {
+  def importFrom(
+    e: dom.Event,
+    calId: UUID
+  )(
+    done: => Unit
+  ): Unit = {
     val input = e.target.asInstanceOf[dom.HTMLInputElement]
     Option(input.files).filter(_.length > 0).map(_(0)).foreach { f =>
-      if (f.size > IcsImport.MaxBytes) Store.toast(s"ファイルが大きすぎます（${IcsImport.MaxBytes / 1024 / 1024}MB まで）", error = true)
+      if (f.size > IcsImport.MaxBytes)
+        Store.toast(s"ファイルが大きすぎます（${IcsImport.MaxBytes / 1024 / 1024}MB まで）", error = true)
       else
         Store.report(Api.importIcs(calId, f)) { r =>
           Store.toast(s"「${f.name}」を取り込みました（${r.summary}）")

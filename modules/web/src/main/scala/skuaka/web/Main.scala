@@ -11,10 +11,15 @@ import org.scalajs.dom
  */
 object Main {
 
-  def main(args: Array[String]): Unit = {
+  def main(
+    args: Array[String]
+  ): Unit = {
     ScalactiveConfig.titleTemplate = "%s | skuaka"
     ScalactiveConfig.defaultTitle = Some("skuaka")
+    AppNames.init("skuaka")
     Theme.apply()
+    // sbirds-lib の部品（Pwa・Observe）の要求にも CSRF 対策の X-Skuaka を付ける
+    sbirds.web.Fetch.extraHeaders = Map("X-Skuaka" -> "1")
     // skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）
     Observe.start()
     Pwa.register()

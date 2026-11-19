@@ -33,6 +33,7 @@ def mounted(s: State): Unit = {
   }
   else Store.report(Api.me()) { me =>
     Store.me := Some(me)
+    AppNames.set(me.appNames)
     Observe.setUser(me.id.toString)
     Store.report(Store.loadCalendars()) { _ =>
       Store.start()
@@ -68,7 +69,7 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
 <template>
   <header class="top">
     <button v-if="loggedIn" class="ghost icon" title="メニュー" @click="Store.sidebar := !Store.sidebar.v">☰</button>
-    <RouterLink :to="homeLink.v" class="logo hide-sp"><span class="brand"><img src="/logo.svg" alt="" width="34" height="34"><span class="hide-sp">skuaka</span></span></RouterLink>
+    <RouterLink :to="homeLink.v" class="logo hide-sp"><span class="brand"><img :src='AppNames.logo("/logo.svg").v' alt="" height="34" class="brand-logo"><span class="hide-sp">{{ AppNames.self }}</span></span></RouterLink>
     <template v-if="browsing">
       <button class="today" @click="Store.date := Cal.today(); Store.goHome()" title="今日（t）">今日</button>
       <button class="ghost round" title="前（k）" @click="Store.step(-1)">‹</button>
@@ -130,7 +131,7 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
   background: var(--bg); border-bottom: 1px solid var(--line); }
 .brand { font-weight: 700; font-size: 1.3rem; color: var(--fg); letter-spacing: .01em; display: inline-flex; align-items: center; gap: .5rem;
   white-space: nowrap; margin-right: 1.2rem; }
-.brand img { display: block; }
+.brand img { display: block; width: auto; max-width: 140px; }
 .icon { font-size: 1.2rem; padding: .3rem .55rem; }
 .today { border-radius: 999px; padding: .35rem 1rem; }
 .round { font-size: 1.4rem; line-height: 1; padding: .1rem .55rem; border-radius: 999px; }

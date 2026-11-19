@@ -73,7 +73,7 @@ val periods: List[(String, String)] = List("30" -> "30日", "90" -> "90日", "36
   <div class="wrap">
   <section class="panel">
     <h2>連携しているサービス</h2>
-    <p class="small">あなたが許可して、あなたの権限で予定を使っているサービス（AI エージェントの skakapo など）です。</p>
+    <p class="small">あなたが許可して、あなたの権限で予定を使っているサービス（AI エージェントの {{ AppNames.of("skakapo") }} など）です。</p>
     <div v-for="t in links(s)" :key="t.id" class="token">
       <div class="grow">
         <div>{{ t.name }}</div>

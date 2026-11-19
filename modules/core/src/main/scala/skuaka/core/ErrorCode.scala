@@ -1,0 +1,73 @@
+package skuaka.core
+
+/**
+ * skuaka のエラーコード（すべてのエラーをここにまとめる）.
+ * 1xxx: 認証・共通（ログイン・API トークン・プロフィール・リクエスト）, 2xxx: カレンダー（共有・公開・配信）, 3xxx: 予定（招待・返事）,
+ * 4xxx: iCalendar の取り込み・URL の購読, 5xxx: 外部との連携（50xx: skaka, 51xx: プッシュ通知）,
+ * 9xxx: サーバー内部・バックグラウンドの処理.
+ */
+enum ErrorCode(
+  val code: String,
+  val status: Int,
+  val message: String) extends sbirds.shared.ErrorCode {
+  case ApiTokenReadOnly extends ErrorCode("SKUAKA-1001", 403, "参照のみの API トークンでは変更できません")
+  case ApiTokenNotAllowed extends ErrorCode("SKUAKA-1002", 403, "この操作は API トークンではできません")
+  case CrossSiteRequest extends ErrorCode("SKUAKA-1003", 403, "画面以外からの更新の要求は受け付けません")
+  case ApiTokenInvalid extends ErrorCode("SKUAKA-1004", 401, "API トークンが正しくないか、期限が切れています")
+  case NotLoggedIn extends ErrorCode("SKUAKA-1005", 401, "ログインしてください")
+  case RequestTooLarge extends ErrorCode("SKUAKA-1006", 413, "リクエストの本文が大きすぎます")
+  case RequestBodyInvalid extends ErrorCode("SKUAKA-1007", 400, "リクエストの内容が正しくありません")
+  case InvalidInput extends ErrorCode("SKUAKA-1009", 400, "入力が正しくありません")
+  case OidcNotConfigured extends ErrorCode("SKUAKA-1010", 503, "OIDC が設定されていません")
+  case LoginCodeStateRequired extends ErrorCode("SKUAKA-1011", 400, "code と state が必要です")
+  case NameRequired extends ErrorCode("SKUAKA-1012", 400, "名前を入力してください")
+  case TimeZoneInvalid extends ErrorCode("SKUAKA-1013", 400, "タイムゾーンが正しくありません")
+  case NameTooLong extends ErrorCode("SKUAKA-1014", 400, "名前は100文字以内にしてください")
+  case AvatarTooLarge extends ErrorCode("SKUAKA-1015", 413, "画像は1MBまでにしてください")
+  case AvatarTypeUnsupported extends ErrorCode("SKUAKA-1016", 415, "PNG・JPEG・GIF・WebP の画像を選んでください")
+  case AvatarNotFound extends ErrorCode("SKUAKA-1017", 404, "アイコンがありません")
+  case ApiTokenNameInvalid extends ErrorCode("SKUAKA-1018", 400, "名前を100文字以内で入れてください")
+  case ApiTokenScopeInvalid extends ErrorCode("SKUAKA-1019", 400, "スコープは read か write です")
+  case ApiTokenExpiryInvalid extends ErrorCode("SKUAKA-1020", 400, "有効期限は1〜3650日です")
+  case ApiTokenNotFound extends ErrorCode("SKUAKA-1021", 404, "API トークンが見つかりません")
+  case McpTokenRequired extends ErrorCode("SKUAKA-1022", 401, "API トークン（Authorization: Bearer）が必要です")
+  case LoginFailed extends ErrorCode("SKUAKA-1023", 401, "ログインできませんでした")
+  case PageNotFound extends ErrorCode("SKUAKA-1024", 404, "ページが見つかりません")
+  case CalendarNotFound extends ErrorCode("SKUAKA-2001", 404, "カレンダーが見つかりません")
+  case CalendarOwnerOnly extends ErrorCode("SKUAKA-2002", 403, "カレンダーの所有者だけができます")
+  case CalendarNotEditable extends ErrorCode("SKUAKA-2003", 403, "このカレンダーの予定は変更できません")
+  case PrimaryCalendarNotDeletable extends ErrorCode("SKUAKA-2004", 400, "自分のメインのカレンダーは削除できません")
+  case ShareRoleInvalid extends ErrorCode("SKUAKA-2005", 400, "権限は view か edit で指定してください")
+  case ShareUserNotFound extends ErrorCode("SKUAKA-2006", 404, "そのユーザーが見つかりません（一度ログインした人だけと共有できます）")
+  case ShareWithSelf extends ErrorCode("SKUAKA-2007", 400, "自分とは共有できません")
+  case TeamCalendarNotFound extends ErrorCode("SKUAKA-2008", 404, "チームに公開されたカレンダーが見つかりません")
+  case PublishScopeInvalid extends ErrorCode("SKUAKA-2009", 400, "公開の範囲は busy か view で指定してください")
+  case PublicCalendarNotFound extends ErrorCode("SKUAKA-2010", 404, "公開されたカレンダーが見つかりません")
+  case IcsFeedNotFound extends ErrorCode("SKUAKA-2011", 404, "配信するカレンダーが見つかりません")
+  case EventRangeInvalid extends ErrorCode("SKUAKA-3001", 400, "from と to を yyyy-MM-dd で指定してください（400日まで）")
+  case EventInSubscribedCalendar extends ErrorCode("SKUAKA-3002", 403, "URL を購読したカレンダーには予定を入れられません（読み取りだけです）")
+  case EventCalendarNotWritable extends ErrorCode("SKUAKA-3003", 403, "このカレンダーには予定を入れられません")
+  case EventNotFound extends ErrorCode("SKUAKA-3004", 404, "予定が見つかりません")
+  case EventNotEditable extends ErrorCode("SKUAKA-3005", 403, "この予定は変更できません")
+  case EventUpdateConflict extends ErrorCode("SKUAKA-3006", 409, "ほかの人がこの予定を変更しました。開き直してください")
+  case RsvpResponseInvalid extends ErrorCode("SKUAKA-3007", 400, "返事が正しくありません")
+  case EventNotInvited extends ErrorCode("SKUAKA-3008", 404, "招待されていない予定です")
+  case ImportNotAvailable extends ErrorCode("SKUAKA-4001", 404, "このサーバーでは外部のカレンダーを取り込めません")
+  case ImportIntoSubscribedCalendar extends ErrorCode("SKUAKA-4002", 400, "URL を購読したカレンダーには取り込めません")
+  case ImportFileTooLarge extends ErrorCode("SKUAKA-4003", 413, "ファイルが大きすぎます")
+  case ImportFileUnreadable extends ErrorCode("SKUAKA-4004", 400, "ファイルを読めませんでした")
+  case ImportIcsInvalid extends ErrorCode("SKUAKA-4005", 400, "iCalendar のファイルが正しくありません")
+  case SubscriptionRefreshFailed extends ErrorCode("SKUAKA-4006", 502, "読み直せませんでした")
+  case CalendarNotSubscribed extends ErrorCode("SKUAKA-4007", 400, "URL を購読したカレンダーではありません")
+  case SubscribeFailed extends ErrorCode("SKUAKA-4008", 400, "URL を購読できませんでした")
+  case SkakaNotConfigured extends ErrorCode("SKUAKA-5001", 404, "skaka との連携は設定されていません")
+  case PushServiceNotAllowed extends ErrorCode("SKUAKA-5101", 400, "このプッシュのサービスには送れません")
+  case PushSubscriptionInvalid extends ErrorCode("SKUAKA-5102", 400, "購読の内容が正しくありません")
+  case Unexpected extends ErrorCode("SKUAKA-9001", 500, "サーバーでエラーが発生しました")
+  case PurgeFailed extends ErrorCode("SKUAKA-9002", 500, "古いデータの削除に失敗しました")
+  case SubscriptionSyncFailed extends ErrorCode("SKUAKA-9003", 500, "iCalendar の購読の読み直しに失敗しました")
+  case InvitePushFailed extends ErrorCode("SKUAKA-9004", 500, "招待のプッシュ通知の送信に失敗しました")
+  case ReminderScanFailed extends ErrorCode("SKUAKA-9005", 500, "リマインダーの確認に失敗しました")
+  case SkakaCallFailed extends ErrorCode("SKUAKA-9006", 502, "skaka に接続できませんでした")
+  case DatabaseNotReady extends ErrorCode("SKUAKA-9007", 503, "データベースにまだ接続できません")
+}

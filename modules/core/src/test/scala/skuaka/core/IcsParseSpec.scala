@@ -4,10 +4,13 @@ import skuaka.shared.Recurrence
 
 import java.time.*
 
-class IcsParseSpec extends munit.FunSuite:
+class IcsParseSpec extends munit.FunSuite {
 
   private val tokyo = ZoneId.of("Asia/Tokyo")
-  private def at(s: String, z: ZoneId = tokyo) = LocalDateTime.parse(s).atZone(z).toInstant
+  private def at(
+    s: String,
+    z: ZoneId = tokyo
+  ) = LocalDateTime.parse(s).atZone(z).toInstant
 
   /** Google カレンダーが書き出すものに近い iCalendar. */
   private val google = List(
@@ -16,7 +19,14 @@ class IcsParseSpec extends munit.FunSuite:
     "VERSION:2.0",
     "X-WR-CALNAME:仕事",
     "X-WR-TIMEZONE:Asia/Tokyo",
-    "BEGIN:VTIMEZONE", "TZID:Asia/Tokyo", "BEGIN:STANDARD", "DTSTART:19700101T000000", "TZOFFSETFROM:+0900", "TZOFFSETTO:+0900", "END:STANDARD", "END:VTIMEZONE",
+    "BEGIN:VTIMEZONE",
+    "TZID:Asia/Tokyo",
+    "BEGIN:STANDARD",
+    "DTSTART:19700101T000000",
+    "TZOFFSETFROM:+0900",
+    "TZOFFSETTO:+0900",
+    "END:STANDARD",
+    "END:VTIMEZONE",
     // 時刻のある予定（TZID）. 説明は折り返しとエスケープ
     "BEGIN:VEVENT",
     "DTSTART;TZID=Asia/Tokyo:20261201T100000",
@@ -26,7 +36,11 @@ class IcsParseSpec extends munit.FunSuite:
     "DESCRIPTION:議題:\\n1. 進み具合\\n2. 次の作業。とても長い説明の行はここで折り返されま",
     " す",
     "LOCATION:会議室A",
-    "BEGIN:VALARM", "ACTION:DISPLAY", "TRIGGER:-PT10M", "DESCRIPTION:アラーム", "END:VALARM",
+    "BEGIN:VALARM",
+    "ACTION:DISPLAY",
+    "TRIGGER:-PT10M",
+    "DESCRIPTION:アラーム",
+    "END:VALARM",
     "END:VEVENT",
     // 終日の予定（DTEND は次の日）
     "BEGIN:VEVENT",
@@ -59,15 +73,36 @@ class IcsParseSpec extends munit.FunSuite:
     "SUMMARY:電話",
     "END:VEVENT",
     // 取り消された予定・UID のない予定
-    "BEGIN:VEVENT", "DTSTART:20261204T030000Z", "UID:a5@google.com", "STATUS:CANCELLED", "SUMMARY:中止", "END:VEVENT",
-    "BEGIN:VEVENT", "DTSTART:20261204T030000Z", "SUMMARY:UIDなし", "END:VEVENT",
+    "BEGIN:VEVENT",
+    "DTSTART:20261204T030000Z",
+    "UID:a5@google.com",
+    "STATUS:CANCELLED",
+    "SUMMARY:中止",
+    "END:VEVENT",
+    "BEGIN:VEVENT",
+    "DTSTART:20261204T030000Z",
+    "SUMMARY:UIDなし",
+    "END:VEVENT",
     // 毎月15日と末日（BYMONTHDAY）・skuaka で表せない繰り返し（年の何日目）
-    "BEGIN:VEVENT", "DTSTART;VALUE=DATE:20261215", "UID:a6@google.com", "RRULE:FREQ=MONTHLY;BYMONTHDAY=15,-1", "SUMMARY:支払い", "END:VEVENT",
-    "BEGIN:VEVENT", "DTSTART;VALUE=DATE:20260101", "UID:a7@google.com", "RRULE:FREQ=YEARLY;BYYEARDAY=100", "SUMMARY:100日目", "END:VEVENT",
-    "END:VCALENDAR").mkString("\r\n")
+    "BEGIN:VEVENT",
+    "DTSTART;VALUE=DATE:20261215",
+    "UID:a6@google.com",
+    "RRULE:FREQ=MONTHLY;BYMONTHDAY=15,-1",
+    "SUMMARY:支払い",
+    "END:VEVENT",
+    "BEGIN:VEVENT",
+    "DTSTART;VALUE=DATE:20260101",
+    "UID:a7@google.com",
+    "RRULE:FREQ=YEARLY;BYYEARDAY=100",
+    "SUMMARY:100日目",
+    "END:VEVENT",
+    "END:VCALENDAR"
+  ).mkString("\r\n")
 
   private lazy val parsed = IcsParse.parse(google, ZoneOffset.UTC).fold(fail(_), identity)
-  private def ev(uid: String) = parsed.events.find(_.uid == uid).getOrElse(fail(s"$uid がない: ${parsed.events.map(_.uid)}"))
+  private def ev(
+    uid: String
+  ) = parsed.events.find(_.uid == uid).getOrElse(fail(s"$uid がない: ${parsed.events.map(_.uid)}"))
 
   test("カレンダーの名前と、読み取れなかった予定の数") {
     assertEquals(parsed.name, Some("仕事"))
@@ -98,8 +133,12 @@ class IcsParseSpec extends munit.FunSuite:
     assertEquals(moved.rule, None)
     assertEquals(moved.span, Span.Timed(at("2026-12-16T10:00"), at("2026-12-16T10:30")))
     // 展開すると 12/2・12/23・12/30（9日と16日は除く）
-    val occ = Expand.occurrences(e.span, e.zone, e.rule, e.exdates.toSet, at("2026-12-01T00:00"), at("2027-01-31T00:00"), tokyo)
-    assertEquals(occ.map(_.key), List("2026-12-02T09:00", "2026-12-23T09:00", "2026-12-30T09:00").map(s => at(s).toString))
+    val occ =
+      Expand.occurrences(e.span, e.zone, e.rule, e.exdates.toSet, at("2026-12-01T00:00"), at("2027-01-31T00:00"), tokyo)
+    assertEquals(
+      occ.map(_.key),
+      List("2026-12-02T09:00", "2026-12-23T09:00", "2026-12-30T09:00").map(s => at(s).toString)
+    )
   }
 
   test("UTC の時刻と DURATION. 浮動の時刻でなければ X-WR-TIMEZONE を基準にする") {
@@ -116,11 +155,29 @@ class IcsParseSpec extends munit.FunSuite:
   }
 
   test("Outlook の Windows のタイムゾーン名・浮動の時刻・iCalendar でないもの") {
-    val ics = List("BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:o1", "DTSTART;TZID=\"Tokyo Standard Time\":20261201T100000",
-      "DTEND;TZID=\"Tokyo Standard Time\":20261201T110000", "SUMMARY:Outlook", "END:VEVENT",
-      "BEGIN:VEVENT", "UID:o2", "DTSTART:20261201T100000", "DTEND:20261201T110000", "END:VEVENT", "END:VCALENDAR").mkString("\n")
+    val ics = List(
+      "BEGIN:VCALENDAR",
+      "BEGIN:VEVENT",
+      "UID:o1",
+      "DTSTART;TZID=\"Tokyo Standard Time\":20261201T100000",
+      "DTEND;TZID=\"Tokyo Standard Time\":20261201T110000",
+      "SUMMARY:Outlook",
+      "END:VEVENT",
+      "BEGIN:VEVENT",
+      "UID:o2",
+      "DTSTART:20261201T100000",
+      "DTEND:20261201T110000",
+      "END:VEVENT",
+      "END:VCALENDAR"
+    ).mkString("\n")
     val p = IcsParse.parse(ics, tokyo).fold(fail(_), identity)
-    assertEquals(p.events.map(_.span), List(Span.Timed(at("2026-12-01T10:00"), at("2026-12-01T11:00")), Span.Timed(at("2026-12-01T10:00"), at("2026-12-01T11:00"))))
+    assertEquals(
+      p.events.map(_.span),
+      List(
+        Span.Timed(at("2026-12-01T10:00"), at("2026-12-01T11:00")),
+        Span.Timed(at("2026-12-01T10:00"), at("2026-12-01T11:00"))
+      )
+    )
     assertEquals(p.events.map(_.title), List("Outlook", "（タイトルなし）"))
     assert(IcsParse.parse("<html></html>", tokyo).isLeft)
   }
@@ -134,9 +191,22 @@ class IcsParseSpec extends munit.FunSuite:
   }
 
   test("skuaka が書き出した iCalendar を読み戻せる") {
-    val src = IcsEvent("x1@skuaka", "読み戻し; テスト", "説明\n2行目", "", Span.Timed(at("2026-12-01T10:00"), at("2026-12-01T11:00")), tokyo,
-      Some(Recurrence(Recurrence.Daily, 1, Nil, None, Some(5))), List(at("2026-12-03T10:00").toString), Instant.now())
+    val src = IcsEvent(
+      "x1@skuaka",
+      "読み戻し; テスト",
+      "説明\n2行目",
+      "",
+      Span.Timed(at("2026-12-01T10:00"), at("2026-12-01T11:00")),
+      tokyo,
+      Some(Recurrence(Recurrence.Daily, 1, Nil, None, Some(5))),
+      List(at("2026-12-03T10:00").toString),
+      Instant.now()
+    )
     val p = IcsParse.parse(Ics.calendar("名前", List(src), Instant.now()), ZoneOffset.UTC).fold(fail(_), identity)
     val e = p.events.head
-    assertEquals((e.uid, e.title, e.description, e.span, e.zone, e.rule, e.exdates), (src.uid, src.title, src.description, src.span, tokyo, src.rule, src.exdates))
+    assertEquals(
+      (e.uid, e.title, e.description, e.span, e.zone, e.rule, e.exdates),
+      (src.uid, src.title, src.description, src.span, tokyo, src.rule, src.exdates)
+    )
   }
+}

@@ -50,9 +50,9 @@ def skakaResult(): Unit = {
   val q = new dom.URLSearchParams(dom.window.location.search)
   if (q.get("integration") == "skaka") {
     q.get("result") match {
-      case "connected" => Store.toast("skaka（Web 会議）と連携しました")
-      case "denied"    => Store.toast("skaka で許可されませんでした", error = true)
-      case _           => Store.toast("skaka と連携できませんでした。もう一度試してください", error = true)
+      case "connected" => Store.toast(s"${AppNames.nameOf("skaka")}（Web 会議）と連携しました")
+      case "denied"    => Store.toast(s"${AppNames.nameOf("skaka")} で許可されませんでした", error = true)
+      case _           => Store.toast(s"${AppNames.nameOf("skaka")} と連携できませんでした。もう一度試してください", error = true)
     }
     dom.window.history.replaceState(null, "", dom.window.location.pathname)
     Store.loadSkaka().failed.foreach(_ => ())
@@ -60,7 +60,7 @@ def skakaResult(): Unit = {
 }
 
 def disconnectSkaka(): Unit =
-  Dialog.confirm("skaka（Web 会議）との連携をやめますか？（付けてある会議室の URL はそのまま残ります）", "やめる") {
+  Dialog.confirm(s"${AppNames.nameOf("skaka")}（Web 会議）との連携をやめますか？（付けてある会議室の URL はそのまま残ります）", "やめる") {
     Store.report(Api.disconnectSkaka())(_ => { Store.toast("連携をやめました"); Store.loadSkaka().failed.foreach(_ => ()) })
   }
 
@@ -142,13 +142,13 @@ def zones: List[String] = Cal.timezones()
       </form>
     </section>
     <section v-if="hasSkaka" class="panel">
-      <h2>Web 会議（skaka）</h2>
-      <p class="small">skaka と連携すると、予定を作るときに Web 会議の会議室を付けられます（会議室の URL を予定の場所に入れます）。</p>
+      <h2>Web 会議（{{ AppNames.of("skaka") }}）</h2>
+      <p class="small">{{ AppNames.of("skaka") }} と連携すると、予定を作るときに Web 会議の会議室を付けられます（会議室の URL を予定の場所に入れます）。</p>
       <template v-if="skakaConnected">
         <p class="small">✓ 連携しています（<a :href="skakaUrl.v" target="_blank" rel="noopener">{{ skakaUrl }}</a>）</p>
         <button class="danger" @click="disconnectSkaka()">連携をやめる</button>
       </template>
-      <a v-else class="btn primary" :href="connectUrl">skaka（Web 会議）と連携する</a>
+      <a v-else class="btn primary" :href="connectUrl">{{ AppNames.of("skaka") }}（Web 会議）と連携する</a>
     </section>
     <section class="panel">
       <h2>表示（この端末）</h2>

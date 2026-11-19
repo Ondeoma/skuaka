@@ -1,30 +1,44 @@
 ThisBuild / scalaVersion := "3.3.7"
 ThisBuild / organization := "io.github.ondeoma"
-ThisBuild / version      := "0.1.0-SNAPSHOT"
-ThisBuild / licenses     := List("MIT" -> url("https://opensource.org/licenses/MIT"))
-ThisBuild / homepage     := Some(url("https://github.com/Ondeoma/skuaka"))
-ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature", "-Wunused:imports")
+ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / licenses := List("MIT" -> url("https://opensource.org/licenses/MIT"))
+ThisBuild / homepage := Some(url("https://github.com/Ondeoma/skuaka"))
+ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature", "-Wunused:imports", "-no-indent")
 
 val http4sV = "1.0.0-M49"
-val circeV  = "0.14.16"
+val circeV = "0.14.16"
 val doobieV = "1.0.0-RC12"
-val ceV     = "3.7.1"
-val munitV  = "1.3.6"
+val ceV = "3.7.1"
+val munitV = "1.3.6"
 val flywayV = "11.3.0"
-val otel4sV   = "1.2.0"
-val otelV     = "1.68.0"
+val otel4sV = "1.2.0"
+val otelV = "1.68.0"
 val otelInstV = "2.33.1-alpha"
+
+// sbirds シリーズの共通ライブラリ（GitHub のリポジトリを直接参照する. 手元の sbirds-lib で試すときは SBIRDS_LIB=../sbirds-lib）
+lazy val sbirdsLib = sys.env
+  .get("SBIRDS_LIB")
+  .map(p => file(p).getCanonicalFile.toURI)
+  .getOrElse(uri("https://github.com/Ondeoma/sbirds-lib.git#v0.1.0"))
+lazy val libSharedJVM = ProjectRef(sbirdsLib, "sharedJVM")
+lazy val libSharedJS = ProjectRef(sbirdsLib, "sharedJS")
+lazy val libObserve = ProjectRef(sbirdsLib, "observe")
+lazy val libAuth = ProjectRef(sbirdsLib, "auth")
+lazy val libHttp = ProjectRef(sbirdsLib, "http")
+lazy val libPush = ProjectRef(sbirdsLib, "push")
+lazy val libWeb = ProjectRef(sbirdsLib, "web")
+lazy val libDevidp = ProjectRef(sbirdsLib, "devidp")
 
 // http4s のサーバー側（ルートの DSL と JSON）
 val http4sServer = Seq(
-  "org.http4s" %% "http4s-dsl"    % http4sV,
-  "org.http4s" %% "http4s-circe"  % http4sV,
+  "org.http4s" %% "http4s-dsl" % http4sV,
+  "org.http4s" %% "http4s-circe" % http4sV,
   "org.http4s" %% "http4s-server" % http4sV
 )
 
 lazy val commonTest = Seq(
   libraryDependencies ++= Seq(
-    "org.scalameta" %% "munit"             % munitV  % Test,
+    "org.scalameta" %% "munit" % munitV % Test,
     "org.typelevel" %% "munit-cats-effect" % "2.2.1" % Test
   ),
   Test / fork := true
@@ -34,9 +48,11 @@ lazy val commonTest = Seq(
 lazy val shared = crossProject(JVMPlatform, JSPlatform)
   .crossType(CrossType.Full) // 日時(Timestamp)だけ JVM と JS で実装が違う
   .in(file("modules/shared"))
+  .jvmConfigure(_.dependsOn(libSharedJVM))
+  .jsConfigure(_.dependsOn(libSharedJS))
   .settings(
     libraryDependencies ++= Seq(
-      "io.circe" %%% "circe-core"   % circeV,
+      "io.circe" %%% "circe-core" % circeV,
       "io.circe" %%% "circe-parser" % circeV
     )
   )
@@ -44,7 +60,7 @@ lazy val shared = crossProject(JVMPlatform, JSPlatform)
 // 画面: Scalactive の SPA（frontend/ の Vite から読み込む）
 lazy val web = (project in file("modules/web"))
   .enablePlugins(ScalaJSPlugin, ScalactivePlugin)
-  .dependsOn(shared.js)
+  .dependsOn(shared.js, libWeb)
   .settings(
     scalaJSLinkerConfig ~= (_.withModuleKind(ModuleKind.ESModule)),
     scalaJSUseMainModuleInitializer := true,
@@ -59,74 +75,34 @@ lazy val core = (project in file("modules/core"))
   .settings(commonTest)
 
 lazy val db = (project in file("modules/db"))
-  .dependsOn(core, observe)
+  .dependsOn(core, libObserve)
   .settings(commonTest)
   .settings(
     libraryDependencies ++= Seq(
-      "org.tpolecat"  %% "doobie-core"     % doobieV,
-      "org.tpolecat"  %% "doobie-hikari"   % doobieV,
-      "org.tpolecat"  %% "doobie-postgres" % doobieV,
-      "org.typelevel" %% "cats-effect"     % ceV,
-      "org.postgresql" % "postgresql"      % "42.7.14",
-      "org.flywaydb"   % "flyway-core"     % flywayV,
-      "org.flywaydb"   % "flyway-database-postgresql" % flywayV % Runtime
+      "org.tpolecat" %% "doobie-core" % doobieV,
+      "org.tpolecat" %% "doobie-hikari" % doobieV,
+      "org.tpolecat" %% "doobie-postgres" % doobieV,
+      "org.typelevel" %% "cats-effect" % ceV,
+      "org.postgresql" % "postgresql" % "42.7.14",
+      "org.flywaydb" % "flyway-core" % flywayV,
+      "org.flywaydb" % "flyway-database-postgresql" % flywayV % Runtime
     )
   )
 
-// OIDC（Authorization Code + PKCE、ID トークンの署名の検証）
+// 認証（OIDC・暗号は sbirds-lib. skuaka 固有の APIキーの接頭辞・秘密の値の暗号化の salt）
 lazy val auth = (project in file("modules/auth"))
-  .settings(commonTest)
-  .settings(
-    libraryDependencies ++= Seq(
-      "org.http4s" %% "http4s-client" % http4sV,
-      "org.http4s" %% "http4s-circe"  % http4sV,
-      "io.circe"   %% "circe-parser"  % circeV
-    )
-  )
+  .dependsOn(libAuth)
 
 // 開発・テスト用の簡易 OIDC プロバイダ（本番では使わない）
 lazy val devidp = (project in file("modules/devidp"))
-  .dependsOn(auth)
+  .dependsOn(libDevidp)
   .settings(
-    libraryDependencies ++= http4sServer ++ Seq(
-      "org.http4s" %% "http4s-ember-server" % http4sV,
-      "org.typelevel" %% "log4cats-noop"    % "2.8.0"
-    ),
-    Compile / mainClass := Some("skuaka.devidp.DevIdp"),
+    Compile / mainClass := Some("skuaka.devidp.DevIdpMain"),
     fork := true
   )
 
-// 観測（OpenTelemetry: otel4s-oteljava）. ログ・メトリクス・トレースを OTLP で skorimako に送る
-lazy val observe = (project in file("modules/observe"))
-  .settings(commonTest)
-  .settings(
-    libraryDependencies ++= http4sServer ++ Seq(
-      "org.typelevel"   %% "otel4s-oteljava"                 % otel4sV,
-      "org.typelevel"   %% "otel4s-oteljava-context-storage" % otel4sV,
-      "org.typelevel"   %% "otel4s-instrumentation-metrics"  % otel4sV,
-      "io.opentelemetry" % "opentelemetry-exporter-otlp"     % otelV,
-      "io.opentelemetry.instrumentation" % "opentelemetry-logback-appender-1.0" % otelInstV,
-      "io.opentelemetry.instrumentation" % "opentelemetry-logback-mdc-1.0"      % otelInstV,
-      "io.opentelemetry.instrumentation" % "opentelemetry-runtime-telemetry"    % otelInstV,
-      "org.http4s"      %% "http4s-client"                   % http4sV,
-      "ch.qos.logback"   % "logback-classic"                 % "1.5.18",
-      "org.tpolecat"    %% "doobie-core"                     % doobieV
-    )
-  )
-
-// プッシュ通知（PWA. Web Push の暗号化と VAPID は JDK の暗号の機能だけで実装）
-lazy val push = (project in file("modules/push"))
-  .dependsOn(db, observe)
-  .settings(commonTest)
-  .settings(
-    libraryDependencies ++= Seq(
-      "org.http4s" %% "http4s-client" % http4sV,
-      "io.circe"   %% "circe-core"    % circeV
-    )
-  )
-
 lazy val api = (project in file("modules/api"))
-  .dependsOn(core, db, auth, shared.jvm, observe, push, devidp % "test->compile")
+  .dependsOn(core, db, auth, shared.jvm, libObserve, libHttp, libPush, devidp % "test->compile")
   .settings(commonTest)
   .settings(
     libraryDependencies ++= http4sServer
@@ -136,15 +112,15 @@ lazy val app = (project in file("modules/app"))
   .dependsOn(api)
   .settings(
     libraryDependencies ++= Seq(
-      "org.http4s"    %% "http4s-ember-server" % http4sV,
-      "org.http4s"    %% "http4s-ember-client" % http4sV,
-      "ch.qos.logback" % "logback-classic"     % "1.5.18",
-      "org.typelevel" %% "log4cats-slf4j"      % "2.8.0"
+      "org.http4s" %% "http4s-ember-server" % http4sV,
+      "org.http4s" %% "http4s-ember-client" % http4sV,
+      "ch.qos.logback" % "logback-classic" % "1.5.18",
+      "org.typelevel" %% "log4cats-slf4j" % "2.8.0"
     ),
     Compile / mainClass := Some("skuaka.app.Main"),
     fork := true
   )
 
 lazy val root = (project in file("."))
-  .aggregate(shared.jvm, shared.js, web, core, db, auth, devidp, observe, push, api, app)
+  .aggregate(shared.jvm, shared.js, web, core, db, auth, devidp, api, app)
   .settings(name := "skuaka", publish / skip := true)

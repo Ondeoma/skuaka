@@ -260,9 +260,9 @@ def close(): Unit = Store.editor := None
         <div>
           <label class="field"><span>場所</span><input type="text" v-model="s.location" placeholder="場所を追加"></label>
           <div v-if="hasSkaka" class="meeting small">
-            <span v-if="attached(s)"><span class="ico ico-video"></span> Web 会議（skaka）を付けてあります</span>
-            <label v-if="canAttach(s)" class="row"><input type="checkbox" v-model="s.meeting"> <span class="ico ico-video"></span> Web 会議（skaka）を付ける</label>
-            <span v-if="needConnect(s)" class="muted"><span class="ico ico-video"></span> 設定の画面で skaka と連携すると、Web 会議を付けられます</span>
+            <span v-if="attached(s)"><span class="ico ico-video"></span> Web 会議（{{ AppNames.of("skaka") }}）を付けてあります</span>
+            <label v-if="canAttach(s)" class="row"><input type="checkbox" v-model="s.meeting"> <span class="ico ico-video"></span> Web 会議（{{ AppNames.of("skaka") }}）を付ける</label>
+            <span v-if="needConnect(s)" class="muted"><span class="ico ico-video"></span> 設定の画面で {{ AppNames.of("skaka") }} と連携すると、Web 会議を付けられます</span>
           </div>
           <label class="field"><span>説明</span><textarea v-model="s.description" rows="5" placeholder="説明を追加"></textarea></label>
           <div class="field"><span>通知</span>
