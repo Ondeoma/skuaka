@@ -22,7 +22,7 @@ import skuaka.shared.ErrorDto
 import scala.concurrent.duration.*
 
 final case class AppConfig(port: Int, db: DbConfig, oidc: Option[OidcConfig], api: ApiConfig, staticDir: Option[String],
-    skaka: Option[SkakaConfig], appSecret: Option[String])
+    skaka: Option[SkakaConfig], appSecret: Option[String], icsSyncMinutes: Int = 60, icsAllowPrivate: Boolean = false)
 
 /** 設定は環境変数から読む. */
 object Config:
@@ -87,7 +87,9 @@ object Config:
         oauthClients = clients),
       staticDir = opt("STATIC_DIR"),
       skaka = skaka,
-      appSecret = secret
+      appSecret = secret,
+      icsSyncMinutes = int("ICS_SYNC_MINUTES").filter(_ >= 5).getOrElse(60),
+      icsAllowPrivate = enabled("ICS_ALLOW_PRIVATE_URLS")
     )).left.map(new IllegalArgumentException(_))
   )
 
@@ -130,11 +132,15 @@ object Main extends IOApp.Simple:
         pushStore = new PushStore(xa)
         push     <- Resource.eval(PushService.create(pushStore, http, cfg.api.publicUrl, "skuaka"))
         notifier  = new EventNotifier(events, users, push)
+        // 外部のカレンダー（iCalendar の URL）の購読を定期的に読み直す
+        importer = new CalendarImporter(http, calendars, events, users,
+                     if cfg.icsAllowPrivate then UrlGuard.allowAll else UrlGuard.publicOnly, cfg.icsSyncMinutes.minutes)
+        _ <- importer.loop.background
         _ <- purgeLoop(users, events).background
         _ <- notifier.reminderLoop.background
         web <- Resource.eval(cfg.staticDir.traverse(spa))
         all = ApiRoutes(oidc, users, calendars, events, sess, cfg.api, skaka, Some(pushStore -> push), Some(notifier),
-                Some(new OAuthStore(xa))) <+>
+                Some(new OAuthStore(xa)), Some(importer)) <+>
                 SecurityHeaders(healthRoutes(xa) <+> RumRoutes.routes <+> web.getOrElse(HttpRoutes.empty[IO]), cfg.api.cookieSecure)
         httpApp <- HttpTelemetry(ErrorHandling.Custom.recoverWith(all.orNotFound)(handler), List("/api", "/auth", "/ics", "/mcp", "/oauth"))
         _ <- EmberServerBuilder.default[IO]

@@ -40,7 +40,8 @@
 ## 予定と繰り返し
 
 - 時刻のある予定は `start_at`・`end_at`（timestamptz、終わりを含まない）、終日の予定は `start_date`・`end_date`（date、終わりの日を含む）。
-- 繰り返しは iCalendar の RRULE の一部（FREQ・INTERVAL・BYDAY・UNTIL・COUNT）を文字列で保存し、**表示のたびにサーバーで展開する**
+- 繰り返しは iCalendar の RRULE の一部（FREQ・INTERVAL・BYDAY・BYMONTHDAY・BYMONTH・BYSETPOS・UNTIL・COUNT）を文字列で保存し、**表示のたびにサーバーで展開する**
+  （RFC 5545 のとおり、期間（日・週・月・年）ごとに候補の日を作り、BYMONTH・BYMONTHDAY・BYDAY で広げるか絞り、最後に BYSETPOS で選ぶ. `Expand.periodDates`）
   （予定の `timezone` を基準にするので、夏時間をまたいでも現地の時刻を保つ）。除いた回は `exdates`（その回の元の開始）。
 - 期間で探すため、最初の回の始まり `range_start` と最後の回の終わり `range_end`（終わりのない繰り返しは null）を保存時に計算する。
   展開は表示する期間の少し前の周期から始める（何年も続く毎日の予定でも、昔の回を数えない。回数の指定があるときだけは最初から数える）。
@@ -63,6 +64,22 @@
 - 公開リンク（`calendar.public_token` と `public_access`）: 推測できない値を知っている人だけが、ログインせずに読める（所有者が作り直し・停止できる）。
   閲覧のページ `/p/{token}`（画面はログインしたときと同じ部品を閲覧だけで使う。`Store.guest`）と、`/api/public/{token}`・`/ics/{token}.ics`。
   予定は `VisibleEvent.of(row, Some(public_access), None, 0)` で、チームへの公開と同じく busy なら伏せる。ゲストの一覧と主催者は返さない。
+
+## 外部のカレンダーの取り込み
+
+- iCalendar（RFC 5545）を `IcsParse`（core）で読む。Google カレンダー・Outlook・Apple のカレンダーが書き出すものを想定し、
+  折り返し・エスケープ・TZID（IANA の名前と、Outlook の Windows の名前の主なもの）・浮動の時刻（利用者のタイムゾーンで読む）・終日（DTEND は含まない）・
+  DURATION・RRULE（UNTIL は予定のタイムゾーンの日付に直す）・EXDATE・RECURRENCE-ID・STATUS:CANCELLED を扱う。
+  繰り返しの一部の回の変更（RECURRENCE-ID）は、元の予定の `exdates` に入れ、別の予定（UID は「元の UID#その回のキー」）にする。
+  skuaka で表せない RRULE の指定（BYYEARDAY・BYWEEKNO・BYHOUR など）は省いて近似し、件数を返す。VALARM（通知）・ATTENDEE（ゲスト）は取り込まない。
+- 取り込んだ予定は `event.source_uid`（カレンダーごとに一意）に元の UID を持ち、取り込み直すと上書きする（変わった行だけ. 重ならない）。
+- ファイルの取り込み（`POST /api/calendars/{id}/import`）: 予定を入れられるカレンダーに一度だけ写す。写した予定はふつうの予定として変更できる。
+  本文の上限はほかの API（2MB）と分け、`IcsImport.MaxBytes`（10MB）にする。
+- URL の購読（`calendar.source_url`）: 読めたらカレンダーを作る。予定は読み取りだけ（`Member.eventRole` で所有者でも view にし、`CalendarRow.writable` で予定を入れさせない）。
+  `CalendarImporter.loop` が5分ごとに `ICS_SYNC_MINUTES`（既定60分）より前に読んだ購読を `claimDue`（`for update skip locked`. 複数ノードでも二重に読まない）で取り、
+  読み直して、元から消えた予定を消す。失敗の理由は `source_error` に残し、予定はそのまま。
+- SSRF の対策: 購読の URL は http(s) だけで、ホスト名を解決して内部のアドレス（localhost・プライベート・リンクローカル（クラウドのメタデータ）・CGNAT・ユニークローカルなど）なら読みに行かない（`UrlGuard`）。
+  転送（3xx）は3回まで追い、転送先も同じく確かめる。大きさは10MB・60秒まで。開発環境では `ICS_ALLOW_PRIVATE_URLS=true` で手元の URL も読める。
 
 ## 画面
 

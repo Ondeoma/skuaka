@@ -16,3 +16,5 @@ export APP_SECRET=${APP_SECRET:-skuaka-dev-app-secret-0123456789}
 export SKAKA_URL=${SKAKA_URL:-http://localhost:5177} SKAKA_CLIENT_ID=${SKAKA_CLIENT_ID:-skuaka} SKAKA_CLIENT_SECRET=${SKAKA_CLIENT_SECRET:-skuaka-dev-secret-0123456789}
 # skuaka が認可を出す側（skakapo が利用者の権限で REST API・MCP を使う）。skakapo の開発環境（:5199）に登録する値
 export OAUTH_CLIENTS='[{"id":"skakapo","secret":"skakapo-dev-secret-0123456789","redirectUri":"http://localhost:5199/api/connections/callback","name":"skakapo","scopes":["read","write"]}]'
+# 外部のカレンダーの購読: 開発中は手元（localhost）の iCalendar の URL も購読できるようにする（本番では外部に公開されたアドレスだけ）
+export ICS_ALLOW_PRIVATE_URLS=${ICS_ALLOW_PRIVATE_URLS:-true}

@@ -10,7 +10,10 @@ case class Props(draft: Draft)
 case class State(title: RV[String], allDay: RV[Boolean], startDate: RV[String], startTime: RV[String], endDate: RV[String], endTime: RV[String],
                  calendarId: RV[String], color: RV[String], location: RV[String], description: RV[String], repeat: RV[String],
                  cFreq: RV[String], cInterval: RV[Int], cDays: RV[Set[String]], cEnd: RV[String], cUntil: RV[String], cCount: RV[Int],
-                 attendees: RV[List[UserBrief]], reminders: RV[List[Int]], meeting: RV[Boolean] = RV(false))
+                 attendees: RV[List[UserBrief]], reminders: RV[List[Int]], meeting: RV[Boolean] = RV(false),
+                 // カスタムの毎月・毎年: 日の決め方（same: 開始日と同じ日 / monthday: 日にち / weekday: 曜日）・日にち（-1 は末日）・第何週（0 は毎週）・月・何番目（0 はすべて）
+                 cMode: RV[String] = RV("same"), cMonthDays: RV[Set[Int]] = RV(Set.empty), cOrdinals: RV[Set[Int]] = RV(Set.empty),
+                 cMonths: RV[Set[Int]] = RV(Set.empty), cSetPos: RV[Int] = RV(0))
 
 /** 曜日のコード（MO〜SU）. */
 def code(d: String): String = Recurrence.Days((Cal.dow(d) + 6) % 7)
@@ -20,7 +23,7 @@ def last(d: String): String = s"-1${code(d)}"
 /** 繰り返しの選択肢のうち、どれに当たるか（当たらなければカスタム）. */
 def keyOf(r: Option[Recurrence], d: String): String = r match {
   case None => "none"
-  case Some(x) if x.interval != 1 || x.until.isDefined || x.count.isDefined => "custom"
+  case Some(x) if x.interval != 1 || x.until.isDefined || x.count.isDefined || x.byMonthDay.nonEmpty || x.byMonth.nonEmpty || x.bySetPos.nonEmpty => "custom"
   case Some(x) if x.freq == Recurrence.Daily && x.byDay.isEmpty => "daily"
   case Some(x) if x.freq == Recurrence.Weekly && (x.byDay.isEmpty || x.byDay == List(code(d))) => "weekly"
   case Some(x) if x.freq == Recurrence.Weekly && x.byDay.toSet == Recurrence.Weekdays.toSet => "weekdays"
@@ -36,10 +39,15 @@ def initState(props: Props) = {
   val r = d.recurrence
   State(RV(d.title), RV(d.allDay), RV(d.startDate), RV(d.startTime), RV(d.endDate), RV(d.endTime), RV(d.calendarId.toString),
     RV(d.color.getOrElse("")), RV(d.location), RV(d.description), RV(keyOf(r, d.startDate)),
-    RV(r.map(_.freq).getOrElse(Recurrence.Weekly)), RV(r.map(_.interval).getOrElse(1)), RV(r.map(_.byDay.toSet).filter(_.nonEmpty).getOrElse(Set(code(d.startDate)))),
+    RV(r.map(_.freq).getOrElse(Recurrence.Weekly)), RV(r.map(_.interval).getOrElse(1)), RV(r.map(_.byDay.map(_.takeRight(2)).toSet).filter(_.nonEmpty).getOrElse(Set(code(d.startDate)))),
     RV(if (r.exists(_.until.isDefined)) "until" else if (r.exists(_.count.isDefined)) "count" else "never"),
     RV(r.flatMap(_.until).getOrElse(Cal.addMonths(d.startDate, 3))), RV(r.flatMap(_.count).getOrElse(10)),
-    RV(d.attendees), RV(d.reminders))
+    RV(d.attendees), RV(d.reminders),
+    cMode = RV(r.fold("same")(x => if (x.byMonthDay.nonEmpty) "monthday" else if (x.byDay.nonEmpty && x.freq != Recurrence.Weekly) "weekday" else "same")),
+    cMonthDays = RV(r.map(_.byMonthDay.toSet).filter(_.nonEmpty).getOrElse(Set(Cal.day(d.startDate)))),
+    cOrdinals = RV(r.map(_.byDay.flatMap(Recurrence.parseDay).map(_._1.getOrElse(0)).toSet).filter(_.nonEmpty).getOrElse(Set(Cal.nthInMonth(d.startDate)._1))),
+    cMonths = RV(r.map(_.byMonth.toSet).filter(_.nonEmpty).getOrElse(Set(Cal.month(d.startDate)))),
+    cSetPos = RV(r.flatMap(_.bySetPos.headOption).getOrElse(0)))
 }
 
 def mounted(s: State, props: Props): Unit = {
@@ -74,12 +82,39 @@ def recurrence(s: State): Option[Recurrence] = {
     case "monthlyDay"  => Some(Recurrence(Recurrence.Monthly))
     case "yearly"      => Some(Recurrence(Recurrence.Yearly))
     case _ =>
-      val days = if (s.cFreq.v == Recurrence.Weekly) Recurrence.Days.filter(s.cDays.v.contains) else Nil
-      Some(Recurrence(s.cFreq.v, math.max(1, s.cInterval.v), days,
+      val f     = s.cFreq.v
+      val codes = Recurrence.Days.filter(s.cDays.v.contains)
+      val mode  = if (f == Recurrence.Monthly || f == Recurrence.Yearly) s.cMode.v else "same"
+      val byDay =
+        if (f == Recurrence.Weekly) codes
+        else if (mode != "weekday") Nil
+        else if (s.cOrdinals.v.contains(0)) codes
+        else ordinals.map(_._1).filter(s.cOrdinals.v.contains).flatMap(o => codes.map(c => s"$o$c"))
+      Some(Recurrence(f, math.max(1, s.cInterval.v), byDay,
         until = Option.when(s.cEnd.v == "until")(s.cUntil.v).filter(_.nonEmpty),
-        count = Option.when(s.cEnd.v == "count")(math.max(1, s.cCount.v))))
+        count = Option.when(s.cEnd.v == "count")(math.max(1, s.cCount.v)),
+        byMonthDay = if (mode == "monthday") Recurrence.sortedMonthDays(s.cMonthDays.v.toList) else Nil,
+        byMonth = if (f == Recurrence.Yearly) s.cMonths.v.toList.sorted else Nil,
+        bySetPos = if (mode == "weekday" && s.cSetPos.v != 0) List(s.cSetPos.v) else Nil))
   }
 }
+
+// カスタムの毎月・毎年の選択肢
+def customMonthLike(s: State) = s.cFreq.mapC(f => f == Recurrence.Monthly || f == Recurrence.Yearly)
+def customYearly(s: State) = s.cFreq.mapC(_ == Recurrence.Yearly)
+def modeIs(s: State, m: String) = s.cMode.mapC(_ == m)
+val modes: List[(String, String)] = List("same" -> "開始日と同じ日", "monthday" -> "日にちで選ぶ", "weekday" -> "曜日で選ぶ")
+val monthDayChoices: List[(Int, String)] = (1 to 31).toList.map(d => d -> d.toString) :+ (-1 -> "末日")
+val ordinals: List[(Int, String)] = List(0 -> "毎週", 1 -> "第1", 2 -> "第2", 3 -> "第3", 4 -> "第4", 5 -> "第5", -1 -> "最終")
+val setPosChoices: List[(Int, String)] = List(0 -> "すべての日", 1 -> "最初の日", 2 -> "2番目の日", 3 -> "3番目の日", -1 -> "最後の日", -2 -> "最後から2番目の日")
+val monthChoices: List[Int] = (1 to 12).toList
+/** 選んでいれば外し、なければ足す（1つは残す）. */
+def toggleIn[A](rv: RV[Set[A]], x: A): Unit = rv := (if (rv.v.contains(x) && rv.v.size > 1) rv.v - x else rv.v + x)
+def chip[A](rv: RV[Set[A]], x: A, base: String = "dbtn") = rv.mapC(xs => if (xs.contains(x)) s"$base on" else base)
+/** 「毎週」と「第n」は一緒に選べない（毎週を選んだら第nを外す）. */
+def toggleOrdinal(s: State, o: Int): Unit =
+  if (o == 0) s.cOrdinals := Set(0)
+  else { toggleIn(s.cOrdinals, o); if (s.cOrdinals.v.size > 1) s.cOrdinals := s.cOrdinals.v - 0 }
 
 def isCustom(s: State) = s.repeat.mapC(_ == "custom")
 def customWeekly(s: State) = s.cFreq.mapC(_ == Recurrence.Weekly)
@@ -184,6 +219,33 @@ def close(): Unit = Store.editor := None
           <div v-if="customWeekly(s)" class="row days">
             <button v-for="c in Recurrence.Days" type="button" :class="dayBtn(s, c)" @click="toggleDay(s, c)">{{ Recurrence.DayNames(c) }}</button>
           </div>
+          <template v-if="customMonthLike(s)">
+            <div v-if="customYearly(s)" class="row days">
+              <span class="small">月</span>
+              <button v-for="m in monthChoices" type="button" :class='chip(s.cMonths, m, "dbtn wide")' @click="toggleIn(s.cMonths, m)">{{ m }}月</button>
+            </div>
+            <div class="row">
+              <label v-for="m in modes" class="row small"><input type="radio" name="cmode" :checked="modeIs(s, m._1)" @change="s.cMode := m._1"> {{ m._2 }}</label>
+            </div>
+            <div v-if='modeIs(s, "monthday")' class="row days">
+              <button v-for="d in monthDayChoices" type="button" :class='chip(s.cMonthDays, d._1, if (d._1 < 0) "dbtn wide" else "dbtn")'
+                @click="toggleIn(s.cMonthDays, d._1)">{{ d._2 }}</button>
+            </div>
+            <template v-if='modeIs(s, "weekday")'>
+              <div class="row days">
+                <button v-for="o in ordinals" type="button" :class='chip(s.cOrdinals, o._1, "dbtn wide")' @click="toggleOrdinal(s, o._1)">{{ o._2 }}</button>
+              </div>
+              <div class="row days">
+                <button v-for="c in Recurrence.Days" type="button" :class="dayBtn(s, c)" @click="toggleDay(s, c)">{{ Recurrence.DayNames(c) }}</button>
+              </div>
+              <div class="row">
+                <span class="small">そのうち</span>
+                <select :value="s.cSetPos.v.toString" @change="s.cSetPos := Dom.value(event).toInt">
+                  <option v-for="p in setPosChoices" :value="p._1.toString">{{ p._2 }}</option>
+                </select>
+              </div>
+            </template>
+          </template>
           <div class="row">
             <span class="small">終わり</span>
             <label class="row small"><input type="radio" name="cend" :checked='s.cEnd.mapC(_ == "never")' @change='s.cEnd := "never"'> なし</label>
@@ -253,6 +315,7 @@ def close(): Unit = Store.editor := None
 .num { width: 5rem; }
 .dbtn { width: 2rem; height: 2rem; border-radius: 999px; padding: 0; justify-content: center; font-size: .8rem; }
 .dbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.dbtn.wide { width: auto; min-width: 2rem; padding: 0 .6rem; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
 @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; gap: 0; } }
 .guest { display: flex; align-items: center; gap: .5rem; padding: .3rem .2rem; }

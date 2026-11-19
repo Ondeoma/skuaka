@@ -11,7 +11,15 @@ import java.util.UUID
 
 /** カレンダーの1行（自分から見たもの. role はチームへの公開から加えたものなら公開の範囲）. */
 final case class CalendarRow(id: UUID, ownerId: UUID, name: String, description: String, color: String, primary: Boolean,
-    publicToken: Option[String], publicAccess: String, teamAccess: String, role: String, viaTeam: Boolean, myColor: Option[String], visible: Boolean)
+    publicToken: Option[String], publicAccess: String, teamAccess: String, role: String, viaTeam: Boolean, myColor: Option[String], visible: Boolean,
+    sourceUrl: Option[String] = None, syncedAt: Option[java.time.Instant] = None, syncError: Option[String] = None):
+  /** iCalendar の URL を購読したカレンダー（予定は読み取りだけ）. */
+  def subscribed: Boolean = sourceUrl.isDefined
+  /** 予定を入れられるか（編集の権限があり、購読したものでない）. */
+  def writable: Boolean = CalRole.rank(role) >= CalRole.rank(CalRole.Edit) && !subscribed
+
+/** 読みに行く購読（カレンダー・所有者・URL）. */
+final case class Subscription(calendarId: UUID, ownerId: UUID, url: String)
 
 /** チームに公開されたカレンダー（自分の一覧に入っているか）. */
 final case class TeamCalendarRow(id: UUID, ownerId: UUID, name: String, description: String, color: String, primary: Boolean,
@@ -28,12 +36,15 @@ object Member:
     Fragment.const(s"(case when $m.role = 'team' then nullif($c.team_access, 'none') else $m.role end)")
   /** 権限のある行か. */
   def active(c: String, m: String): Fragment = Fragment.const(s"($m.role <> 'team' or $c.team_access <> 'none')")
+  /** 予定に対する権限（購読したカレンダーの予定は、所有者でも閲覧だけ）. */
+  def eventRole(c: String, m: String): Fragment =
+    Fragment.const(s"(case when $c.source_url is not null and $m.role in ('edit', 'owner') then 'view' else ") ++ role(c, m) ++ Fragment.const(" end)")
 
 /** カレンダー・共有の相手・表示の設定. */
 final class CalendarStore(xa: Transactor[IO], users: UserStore) extends TxStore(xa):
 
   private val cols = fr"c.id, c.owner_id, c.name, c.description, c.color, c.is_primary, c.public_token, c.public_access, c.team_access," ++
-    Member.role("c", "m") ++ fr", m.role = 'team', m.color, m.visible"
+    Member.role("c", "m") ++ fr", m.role = 'team', m.color, m.visible, c.source_url, c.source_synced_at, c.source_error"
 
   /** 自分のカレンダー（ログインのたびに確かめ、なければ作る）. */
   def ensurePrimary(u: User): IO[Unit] = tx(
@@ -52,6 +63,27 @@ final class CalendarStore(xa: Transactor[IO], users: UserStore) extends TxStore(
       sql"insert into calendar_member (calendar_id, user_id, role) values ($id, $owner, 'owner') on conflict do nothing".update.run.as(id)
 
   def create(owner: UUID, r: CalendarReq): IO[UUID] = tx(createC(owner, r, primary = false))
+
+  /** iCalendar の URL を購読するカレンダーを作る. */
+  def createSubscribed(owner: UUID, r: CalendarReq, url: String): IO[UUID] = tx(
+    createC(owner, r, primary = false).flatTap(id => sql"update calendar set source_url = $url where id = $id".update.run)
+  )
+
+  /**
+   * 読みに行く時期の来た購読を、最後に読んだのが古い順に limit 件まで取り、読みに行った印（source_synced_at）を付ける.
+   * 複数のノードで同時に動いても、同じ購読を二重に読まない（skip locked）.
+   */
+  def claimDue(before: java.time.Instant, limit: Int): IO[List[Subscription]] = tx(
+    sql"""update calendar set source_synced_at = now() where id in (
+            select id from calendar where source_url is not null and (source_synced_at is null or source_synced_at < $before)
+            order by source_synced_at nulls first limit $limit for update skip locked)
+          returning id, owner_id, source_url""".query[Subscription].to[List]
+  )
+
+  /** 購読を読んだ結果（失敗の理由. 成功なら None）. */
+  def setSynced(id: UUID, error: Option[String]): IO[Unit] = tx(
+    sql"update calendar set source_synced_at = now(), source_error = $error where id = $id".update.run.void
+  )
 
   def list(uid: UUID): IO[List[CalendarRow]] = tx(
     (fr"select" ++ cols ++ fr"""from calendar c join calendar_member m on m.calendar_id = c.id and m.user_id = $uid

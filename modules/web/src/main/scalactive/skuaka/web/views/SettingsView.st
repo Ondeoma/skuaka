@@ -176,7 +176,6 @@ def zones: List[String] = Cal.timezones()
 
 <style scoped>
 .avatar-row { align-items: center; gap: .8rem; }
-.hidden-file { display: none; }
 .top { margin-top: 1rem; }
 .keys td { padding: .2rem .8rem .2rem 0; }
 </style>

@@ -92,6 +92,12 @@ object Api {
   /** チームの人が公開しているカレンダーを探す・自分の一覧に加える（外すのは deleteCalendar）. */
   def teamCalendars(q: String): Future[List[TeamCalendarDto]] = get[List[TeamCalendarDto]]("/api/team/calendars?q=" + enc(q))
   def addTeamCalendar(id: UUID): Future[CalendarDto] = post[CalendarDto](s"/api/team/calendars/$id")
+  /** iCalendar のファイルを取り込む（ファイルはそのまま送る）. */
+  def importIcs(id: UUID, file: dom.Blob): Future[ImportResultDto] =
+    send(dom.HttpMethod.POST, s"/api/calendars/$id/import", Some((file, "text/calendar"))).map(as[ImportResultDto])
+  /** iCalendar の URL を購読する・今すぐ読み直す（購読をやめるのは deleteCalendar）. */
+  def subscribe(r: SubscribeReq): Future[CalendarDto] = post[CalendarDto]("/api/calendars/subscribe", r.asJson)
+  def syncCalendar(id: UUID): Future[CalendarDto] = post[CalendarDto](s"/api/calendars/$id/sync")
   /** ログインしない人への公開リンクを作る・範囲を変える（regenerate で作り直す）・やめる. */
   def setPublicLink(id: UUID, r: PublicLinkReq): Future[CalendarDto] = post[CalendarDto](s"/api/calendars/$id/public", r.asJson)
   def stopPublicLink(id: UUID): Future[Unit] = delete(s"/api/calendars/$id/public")

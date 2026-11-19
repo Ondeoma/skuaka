@@ -198,3 +198,11 @@ header .menu a:hover { background: var(--hover); text-decoration: none; }
 .ico { display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -.18em; background: currentColor;
   -webkit-mask: var(--ico) center / contain no-repeat; mask: var(--ico) center / contain no-repeat; }
 .ico-video { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11'/%3E%3Crect x='2' y='6' width='14' height='12' rx='2'/%3E%3C/svg%3E"); }
+
+/* 切り替えのボタンの並び（表示の種類・カレンダーを追加する画面のタブ） */
+.segs { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.seg { border: none; border-radius: 0; padding: .35rem .9rem; background: transparent; }
+.seg + .seg { border-left: 1px solid var(--line); }
+.seg.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+/* ボタンの形の label の中に置く、見えないファイルの選択 */
+.hidden-file { display: none; }

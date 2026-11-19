@@ -104,29 +104,65 @@ object Expand:
     case Span.AllDay(s, e) =>
       Span.AllDay(d, d.plusDays(ChronoUnit.DAYS.between(s, e)))
 
-  /** 繰り返しの日付（開始の日以降、昇順）. 期間の数は大きく制限する（壊れた繰り返しで止まらなくならないように）. */
+  /**
+   * 繰り返しの日付（開始の日以降、昇順）. 期間の数は大きく制限する（壊れた繰り返しで止まらなくならないように）.
+   * RFC 5545 のとおり、期間（日・週・月・年）ごとに候補の日を作り、BYMONTH・BYMONTHDAY・BYDAY で広げるか絞り、最後に BYSETPOS で選ぶ.
+   */
   private def candidateDates(start: LocalDate, r: Recurrence, firstK: Long): Iterator[LocalDate] =
     val n     = math.max(1, r.interval)
-    val days  = r.byDay.flatMap(Recurrence.parseDay)
     val steps = Iterator.range(firstK.toInt, firstK.toInt + 100000)
-    val perPeriod: Int => List[LocalDate] = r.freq match
-      case Recurrence.Daily => k => List(start.plusDays(k.toLong * n))
+    steps.flatMap(k => setPos(periodDates(start, r, k.toLong * n), r.bySetPos).filterNot(_.isBefore(start)))
+
+  /** BYSETPOS: 期間の候補（昇順）のうち、指定した番目のもの（1 は最初、-1 は最後）. */
+  private def setPos(ds: List[LocalDate], pos: List[Int]): List[LocalDate] =
+    if pos.isEmpty then ds
+    else pos.flatMap(p => if p > 0 then ds.lift(p - 1) else ds.lift(ds.size + p)).distinct.sorted
+
+  /** 曜日の指定（第何週か、ISO の曜日）. */
+  private def days(r: Recurrence): List[(Option[Int], Int)] = r.byDay.flatMap(Recurrence.parseDay)
+
+  /** 日にちの指定（-1 は末日）をその月の日付に. ない日（2月30日など）は飛ばす. */
+  private def monthDays(month: LocalDate, ds: List[Int]): List[LocalDate] =
+    ds.flatMap(d => if d > 0 then Option.when(d <= month.lengthOfMonth)(month.withDayOfMonth(d)) else
+      Option.when(-d <= month.lengthOfMonth)(month.withDayOfMonth(month.lengthOfMonth + d + 1)))
+
+  /** BYMONTH・BYMONTHDAY・BYDAY で絞る（期間を広げない項目. 毎日・毎週の繰り返しと、月の中の日にちを曜日で絞るとき）. */
+  private def keep(d: LocalDate, r: Recurrence, monthDay: Boolean = true, dow: Boolean = true): Boolean =
+    (r.byMonth.isEmpty || r.byMonth.contains(d.getMonthValue)) &&
+      (!monthDay || r.byMonthDay.isEmpty || monthDays(d.withDayOfMonth(1), r.byMonthDay).contains(d)) &&
+      (!dow || r.byDay.isEmpty || days(r).exists(_._2 == d.getDayOfWeek.getValue))
+
+  /** 月の中の候補の日（日にち → 曜日で絞る. 日にちがなければ曜日で広げる. どちらもなければ開始と同じ日）. */
+  private def inMonthDates(month: LocalDate, start: LocalDate, r: Recurrence): List[LocalDate] =
+    if r.byMonthDay.nonEmpty then monthDays(month, r.byMonthDay).filter(keep(_, r, monthDay = false))
+    else if r.byDay.nonEmpty then days(r).flatMap((pos, dow) => inMonth(month, pos, dow))
+    else Option.when(start.getDayOfMonth <= month.lengthOfMonth)(month.withDayOfMonth(start.getDayOfMonth)).toList
+
+  /** k 番目の期間（間隔を掛けたもの）の候補の日（昇順・重なりなし）. */
+  private def periodDates(start: LocalDate, r: Recurrence, k: Long): List[LocalDate] =
+    val out = r.freq match
+      case Recurrence.Daily =>
+        List(start.plusDays(k)).filter(keep(_, r))
       case Recurrence.Weekly =>
-        val dows   = (if days.isEmpty then List(start.getDayOfWeek.getValue) else days.map(_._2)).distinct.sorted
-        val week0  = monday(start)
-        k => dows.map(d => week0.plusWeeks(k.toLong * n).plusDays(d - 1L))
+        val dows = (if r.byDay.isEmpty then List(start.getDayOfWeek.getValue) else days(r).map(_._2)).distinct
+        dows.map(d => monday(start).plusWeeks(k).plusDays(d - 1L)).filter(keep(_, r, dow = false))
       case Recurrence.Monthly =>
-        val first = start.withDayOfMonth(1)
-        k =>
-          val month = first.plusMonths(k.toLong * n)
-          if days.isEmpty then
-            Option.when(start.getDayOfMonth <= month.lengthOfMonth)(month.withDayOfMonth(start.getDayOfMonth)).toList
-          else days.flatMap((pos, dow) => inMonth(month, pos, dow)).distinct.sorted
+        val month = start.withDayOfMonth(1).plusMonths(k)
+        if r.byMonth.nonEmpty && !r.byMonth.contains(month.getMonthValue) then Nil else inMonthDates(month, start, r)
       case _ => // YEARLY
-        k =>
-          val y = start.getYear + k * n
-          Try(LocalDate.of(y, start.getMonthValue, start.getDayOfMonth)).toOption.toList
-    steps.flatMap(k => perPeriod(k).filterNot(_.isBefore(start)))
+        val year = start.getYear + k.toInt
+        if r.byMonth.nonEmpty then r.byMonth.flatMap(m => inMonthDates(LocalDate.of(year, m, 1), start, r))
+        else if r.byMonthDay.nonEmpty then (1 to 12).toList.flatMap(m => inMonthDates(LocalDate.of(year, m, 1), start, r))
+        else if r.byDay.nonEmpty then days(r).flatMap((pos, dow) => inYear(year, pos, dow))
+        else Try(LocalDate.of(year, start.getMonthValue, start.getDayOfMonth)).toOption.toList
+    out.distinct.sorted
+
+  /** 年の中の曜日（pos が None ならその曜日のすべて、20 なら第20、-1 なら最終）. */
+  private def inYear(year: Int, pos: Option[Int], dow: Int): List[LocalDate] =
+    val d     = DayOfWeek.of(dow)
+    val first = LocalDate.of(year, 1, 1).`with`(TemporalAdjusters.nextOrSame(d))
+    val all   = Iterator.iterate(first)(_.plusWeeks(1)).takeWhile(_.getYear == year).toList
+    pos.fold(all)(p => (if p > 0 then all.lift(p - 1) else all.lift(all.size + p)).toList)
 
   private def monday(d: LocalDate): LocalDate = d.`with`(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
 

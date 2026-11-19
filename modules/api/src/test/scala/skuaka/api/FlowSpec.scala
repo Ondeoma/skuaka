@@ -67,6 +67,16 @@ class FlowSpec extends munit.CatsEffectSuite:
         else r.as[Json].flatMap(j => IO(skakaCalls.add(s"PUT /api/rooms/$code/event ${j.noSpaces}")) *> Ok(Json.obj()))
     }
 
+  // ---------------------------------------------------------------- 偽の iCalendar の配信（購読のテスト）
+
+  private val icsBody = new java.util.concurrent.atomic.AtomicReference[String]("")
+  private val fakeIcs: HttpRoutes[IO] =
+    import org.http4s.dsl.io.*
+    HttpRoutes.of[IO] {
+      case GET -> Root / "cal.ics" => IO.pure(TextResponse(Status.Ok, icsBody.get, MediaType.unsafeParse("text/calendar")))
+      case GET -> Root / "moved.ics" => IO.pure(Response[IO](Status.Found).putHeaders(Location(uri"http://ics.test/cal.ics")))
+    }
+
   /** IdP とアプリ（ルート）を用意する. DB はまっさらにする. */
   private val fixture = ResourceSuiteLocalFixture("app", for
     _  <- Resource.eval(IO.blocking {
@@ -83,7 +93,8 @@ class FlowSpec extends munit.CatsEffectSuite:
     val sess  = new SessionAuth(users, apiCfg)
     val skaka = new SkakaService(SkakaConfig(skakaUrl, skakaUrl, "skuaka", "skuaka-test-secret-0123456789"), Client.fromHttpApp(fakeSkaka.orNotFound),
       new IntegrationStore(xa), new skuaka.auth.SecretBox("test-app-secret-0123456789"))
-    val app = ApiRoutes(Some(oidc), users, cals, events, sess, apiCfg, Some(skaka), oauth = Some(new OAuthStore(xa))).orNotFound
+    val importer = new CalendarImporter(Client.fromHttpApp(fakeIcs.orNotFound), cals, events, users, UrlGuard.allowAll)
+    val app = ApiRoutes(Some(oidc), users, cals, events, sess, apiCfg, Some(skaka), oauth = Some(new OAuthStore(xa)), importer = Some(importer)).orNotFound
     (idp.routes.orNotFound, app, xa))
 
   override def munitFixtures = List(fixture)
@@ -708,4 +719,85 @@ class FlowSpec extends munit.CatsEffectSuite:
       gone <- bearer(at2, Method.GET, "/api/me")
       _     = assertEquals(gone.status, Status.Unauthorized)
     yield ()
+  }
+
+  // ---------------------------------------------------------------- 外部のカレンダーの取り込み・購読
+
+  private def ics(events: (String, String, String)*): String =
+    (List("BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:外部の予定") ++ events.toList.flatMap((uid, title, day) =>
+      List("BEGIN:VEVENT", s"UID:$uid", s"DTSTART;TZID=Asia/Tokyo:${day}T100000", s"DTEND;TZID=Asia/Tokyo:${day}T110000", s"SUMMARY:$title", "END:VEVENT")) ++
+      List("END:VCALENDAR")).mkString("\r\n")
+
+  private def importIcs(token: String, cal: UUID, text: String): IO[Response[IO]] =
+    val (_, app, _) = fixture()
+    app.run(Request[IO](Method.POST, Uri.unsafeFromString(s"/api/calendars/$cal/import"))
+      .putHeaders(Cookie(RequestCookie("skuaka_session", token)), Header.Raw(CIString("X-Skuaka"), "1"))
+      .withEntity(text)(using EntityEncoder.stringEncoder).withContentType(org.http4s.headers.`Content-Type`(MediaType.unsafeParse("text/calendar"))))
+
+  private def december(t: String): IO[List[OccurrenceDto]] =
+    call(t, Method.GET, "/api/events?from=2026-12-01&to=2027-01-01&tz=Asia/Tokyo").flatMap(json[List[OccurrenceDto]])
+
+  test("取り込み: iCalendar のファイルを取り込む. 取り込み直すと変わった予定だけを上書きし、重ならない") {
+    for
+      t    <- login("取込 一郎", "torikomi@example.com")
+      cal  <- call(t, Method.GET, "/api/calendars").flatMap(json[List[CalendarDto]]).map(_.find(_.primary).get)
+      r1   <- importIcs(t, cal.id, ics(("i1", "歯医者", "20261205"), ("i2", "飲み会", "20261210"))).flatMap(json[ImportResultDto])
+      _     = assertEquals((r1.created, r1.updated, r1.removed), (2, 0, 0))
+      r2   <- importIcs(t, cal.id, ics(("i1", "歯医者", "20261205"), ("i2", "飲み会", "20261210"))).flatMap(json[ImportResultDto])
+      _     = assertEquals((r2.created, r2.updated), (0, 0))
+      r3   <- importIcs(t, cal.id, ics(("i1", "歯医者（変更）", "20261205"))).flatMap(json[ImportResultDto])
+      _     = assertEquals((r3.created, r3.updated, r3.removed), (0, 1, 0))
+      occ  <- december(t)
+      _     = assertEquals(occ.filter(_.calendarId == cal.id).map(o => (o.title, o.canEdit)).sorted, List(("歯医者（変更）", true), ("飲み会", true)))
+      _     = assertEquals(occ.find(_.title == "飲み会").map(_.start), Some("2026-12-10T01:00:00Z"))
+      bad  <- importIcs(t, cal.id, "<html>not ics</html>")
+      _     = assertEquals(bad.status, Status.BadRequest)
+    yield ()
+  }
+
+  test("購読: iCalendar の URL を購読すると、読み取りだけのカレンダーができる. 読み直すと元から消えた予定は消える") {
+    icsBody.set(ics(("s1", "全社会議", "20261207"), ("s2", "研修", "20261214")))
+    for
+      t    <- login("購読 二郎", "koudoku@example.com")
+      bad  <- call(t, Method.POST, "/api/calendars/subscribe", Some(SubscribeReq("ftp://ics.test/cal.ics").asJson))
+      _     = assertEquals(bad.status, Status.BadRequest)
+      cal  <- call(t, Method.POST, "/api/calendars/subscribe", Some(SubscribeReq("webcal://ics.test/moved.ics").asJson)).flatMap(json[CalendarDto])
+      _     = assertEquals(cal.name, "外部の予定")
+      _     = assertEquals(cal.subscription.flatMap(_.url), Some("https://ics.test/moved.ics"))
+      _     = assert(!cal.writable)
+      occ  <- december(t)
+      mine  = occ.filter(_.calendarId == cal.id)
+      _     = assertEquals(mine.map(_.title).sorted, List("全社会議", "研修"))
+      _     = assert(mine.forall(!_.canEdit), mine)
+      // 読み取りだけ: 予定を入れられず、取り込んだ予定も変えられない. ファイルの取り込みもできない
+      req   = EventReq(cal.id, "入れられない", "", "", false, "2026-12-01T01:00:00Z", "2026-12-01T02:00:00Z", "Asia/Tokyo", None, None, Nil, Nil, None)
+      add  <- call(t, Method.POST, "/api/events", Some(req.asJson))
+      _     = assertEquals(add.status, Status.Forbidden)
+      upd  <- call(t, Method.PUT, s"/api/events/${mine.head.eventId}", Some(req.copy(title = "変えられない").asJson))
+      _     = assertEquals(upd.status, Status.Forbidden)
+      imp  <- importIcs(t, cal.id, ics(("x", "x", "20261201")))
+      _     = assertEquals(imp.status, Status.BadRequest)
+      // 元が変わったら読み直す
+      _     = icsBody.set(ics(("s1", "全社会議（場所変更）", "20261207"), ("s3", "忘年会", "20261225")))
+      re   <- call(t, Method.POST, s"/api/calendars/${cal.id}/sync").flatMap(json[CalendarDto])
+      _     = assertEquals(re.subscription.flatMap(_.error), None)
+      occ2 <- december(t)
+      _     = assertEquals(occ2.filter(_.calendarId == cal.id).map(_.title).sorted, List("全社会議（場所変更）", "忘年会"))
+      // 読めなくなったら理由を返し、予定はそのまま
+      _     = icsBody.set("not ics")
+      ng   <- call(t, Method.POST, s"/api/calendars/${cal.id}/sync")
+      _     = assertEquals(ng.status, Status.BadGateway)
+      cals <- call(t, Method.GET, "/api/calendars").flatMap(json[List[CalendarDto]])
+      _     = assert(cals.find(_.id == cal.id).flatMap(_.subscription).flatMap(_.error).nonEmpty)
+      occ3 <- december(t)
+      _     = assertEquals(occ3.count(_.calendarId == cal.id), 2)
+    yield ()
+  }
+
+  test("購読: 内部のアドレス（localhost・社内のネットワーク・メタデータ）は読みに行かない") {
+    def blocked(ip: String) = UrlGuard.blocked(java.net.InetAddress.getByName(ip))
+    List("127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1")
+      .foreach(ip => assert(blocked(ip), ip))
+    List("8.8.8.8", "142.250.196.110", "2001:4860:4860::8888").foreach(ip => assert(!blocked(ip), ip))
+    UrlGuard.publicOnly.check(java.net.URI.create("http://localhost:8095/x.ics")).map(r => assertEquals(r, Left(UrlGuard.NotPublic)))
   }

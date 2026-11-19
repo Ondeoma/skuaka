@@ -54,6 +54,8 @@ object Store {
   val detail: RV[Option[OccurrenceDto]] = RV(None)
   val calSettings: RV[Option[UUID]] = RV(None)
   val teamPicker: RV[Boolean] = RV(false)
+  /** カレンダーを追加する画面（新しいカレンダー・URL の購読・ファイルの取り込み）. */
+  val addCalendar: RV[Boolean] = RV(false)
 
   val views: List[(String, String)] = List("day" -> "日", "week" -> "週", "month" -> "月", "agenda" -> "スケジュール")
 
@@ -204,7 +206,7 @@ object Store {
 
   /** 予定を入れられるカレンダー（自分のメインのカレンダーが先頭）. */
   def writable: List[CalendarDto] =
-    calendars.v.filter(c => CalRole.rank(c.role) >= CalRole.rank(CalRole.Edit)).sortBy(c => (!c.primary, c.role != CalRole.Owner, c.name))
+    calendars.v.filter(_.writable).sortBy(c => (!c.primary, c.role != CalRole.Owner, c.name))
 
   /** 予定の最初の日と最後の日（画面のタイムゾーンで. 0時ちょうどに終わる予定は前の日まで）. */
   def firstDay(o: OccurrenceDto): String = if (o.allDay) o.start else Cal.dateOf(o.start)
@@ -389,7 +391,7 @@ object Keys {
   def install(): Unit = dom.document.addEventListener("keydown", (e: dom.KeyboardEvent) => {
     val tag = Option(e.target.asInstanceOf[dom.Element]).map(_.tagName.toLowerCase).getOrElse("")
     val busy = Set("input", "textarea", "select").contains(tag) || e.ctrlKey || e.metaKey || e.altKey ||
-      Store.editor.v.isDefined || Store.detail.v.isDefined || Store.calSettings.v.isDefined || Store.teamPicker.v || Dialog.current.v.isDefined
+      Store.editor.v.isDefined || Store.detail.v.isDefined || Store.calSettings.v.isDefined || Store.teamPicker.v || Store.addCalendar.v || Dialog.current.v.isDefined
     if (!busy && dom.window.location.pathname == Store.home) {
       val handled = e.key match {
         case "t"       => Store.date := Cal.today(); true

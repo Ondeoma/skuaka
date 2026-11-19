@@ -62,7 +62,7 @@ final class EventStore(xa: Transactor[IO]) extends TxStore(xa):
    */
   private def visible(uid: UUID, cond: Fragment, tail: Fragment = Fragment.empty, details: Boolean = false): ConnectionIO[List[VisibleEvent]] =
     val member = if details then fr"(cm.role <> 'team' or cc.team_access = 'view')" else Member.active("cc", "cm")
-    (fr"select" ++ cols ++ fr"," ++ Member.role("c", "m") ++ fr""", a.response, (select count(*)::int from event_attendee g where g.event_id = e.id)
+    (fr"select" ++ cols ++ fr"," ++ Member.eventRole("c", "m") ++ fr""", a.response, (select count(*)::int from event_attendee g where g.event_id = e.id)
          from event e
          join calendar c on c.id = e.calendar_id
          left join calendar_member m on m.calendar_id = e.calendar_id and m.user_id = $uid
@@ -143,6 +143,38 @@ final class EventStore(xa: Transactor[IO]) extends TxStore(xa):
   }
 
   def delete(id: UUID): IO[Unit] = tx(sql"delete from event where id = $id".update.run.void)
+
+  /**
+   * 取り込んだ予定を書く（元の UID ごとに、なければ作り、あれば変わったところだけ上書きする. 1つのトランザクションで）.
+   * removeMissing なら、このカレンダーの取り込んだ予定のうち rows にないものを消す（購読で元から消えた予定）.
+   * 取り込みで作った予定にはゲストを付けない. 戻り値は (作った数, 変えた数, 消した数).
+   */
+  def importEvents(calendarId: UUID, rows: List[(String, EventRow)], removeMissing: Boolean): IO[(Int, Int, Int)] = tx {
+    val upserts = rows.traverse { (uid, r) =>
+      val (rs, re) = rangeOf(r)
+      sql"""insert into event as e (id, calendar_id, organizer_id, title, description, location, all_day, start_at, end_at, start_date, end_date,
+              timezone, color, rrule, exdates, reminders, range_start, range_end, source_uid)
+            values (${r.id}, $calendarId, ${r.organizerId}, ${r.title}, ${r.description}, ${r.location}, ${r.allDay}, ${r.startAt}, ${r.endAt},
+              ${r.startDate}, ${r.endDate}, ${r.timezone}, ${r.color}, ${r.rrule}, ${r.exdates.toArray}, ${r.reminders.toArray}, $rs, $re, $uid)
+            on conflict (calendar_id, source_uid) where source_uid is not null do update set
+              title = excluded.title, description = excluded.description, location = excluded.location, all_day = excluded.all_day,
+              start_at = excluded.start_at, end_at = excluded.end_at, start_date = excluded.start_date, end_date = excluded.end_date,
+              timezone = excluded.timezone, rrule = excluded.rrule, exdates = excluded.exdates,
+              range_start = excluded.range_start, range_end = excluded.range_end, version = e.version + 1, updated_at = now()
+            where (e.title, e.description, e.location, e.all_day, e.start_at, e.end_at, e.start_date, e.end_date, e.timezone, e.rrule, e.exdates)
+              is distinct from (excluded.title, excluded.description, excluded.location, excluded.all_day, excluded.start_at, excluded.end_at,
+              excluded.start_date, excluded.end_date, excluded.timezone, excluded.rrule, excluded.exdates)
+            returning (xmax = 0)""".query[Boolean].option
+    }
+    val remove =
+      if !removeMissing then 0.pure[ConnectionIO]
+      else sql"""delete from event where calendar_id = $calendarId and source_uid is not null
+                 and not (source_uid = any(${rows.map(_._1).toArray}))""".update.run
+    for
+      rs <- upserts
+      n  <- remove
+    yield (rs.count(_.contains(true)), rs.count(_.contains(false)), n)
+  }
 
   def rsvp(id: UUID, uid: UUID, response: String): IO[Boolean] = tx(
     sql"update event_attendee set response = $response where event_id = $id and user_id = $uid".update.run.map(_ > 0)

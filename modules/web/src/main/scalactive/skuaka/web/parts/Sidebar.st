@@ -18,14 +18,10 @@ def toggle(c: CalendarDto): Unit = {
   Store.orUndo(Api.calendarPrefs(c.id, CalendarPrefReq(None, Some(!c.visible))))(Store.loadCalendars())
 }
 
-def add(): Unit = Dialog.prompt("新しいカレンダーの名前", "", "作成") { name =>
-  if (name.trim.nonEmpty) {
-    val color = Palette.colors((Store.calendars.v.size * 3) % Palette.colors.size)._1
-    Store.report(Api.createCalendar(CalendarReq(name.trim, color, ""))) { c =>
-      Store.report(Store.loadCalendars())(_ => Store.calSettings := Some(c.id))
-    }
-  }
-}
+/** URL を購読したカレンダーの説明（読めなかったときはその理由）. */
+def subTip(c: CalendarDto): String =
+  c.subscription.fold("")(x => "iCalendar の URL を購読（読み取りだけ）" + x.error.fold("")(e => s"\n読めませんでした: $e"))
+def subMark(c: CalendarDto): String = c.subscription.fold("")(x => if (x.error.isDefined) "⚠" else "⟳")
 
 def create(): Unit = {
   if (org.scalajs.dom.window.innerWidth < 720) Store.sidebar := false
@@ -38,9 +34,10 @@ def create(): Unit = {
     <button class="create" @click="create()"><span class="plus">＋</span> 作成</button>
     <MiniMonth />
     <div class="group">
-      <div class="gh"><span>マイカレンダー</span><button class="ghost small" title="カレンダーを追加" @click="add()">＋</button></div>
+      <div class="gh"><span>マイカレンダー</span><button class="ghost small" title="カレンダーを追加（新しいカレンダー・URL で購読・ファイルから取り込む）" @click="Store.addCalendar := true">＋</button></div>
       <div v-for="c in mine" :key="c.id" class="cal">
-        <label class="grow"><input type="checkbox" :checked="c.visible" :style="boxStyle(c)" @change="toggle(c)"><span class="name">{{ c.name }}</span></label>
+        <label class="grow" :title="subTip(c)"><input type="checkbox" :checked="c.visible" :style="boxStyle(c)" @change="toggle(c)"><span class="name">{{ c.name }}</span>
+          <span v-if="c.subscription.isDefined" class="sub muted small">{{ subMark(c) }}</span></label>
         <button class="ghost small more" title="設定と共有" @click="Store.calSettings := Some(c.id)">⋮</button>
       </div>
     </div>
@@ -68,6 +65,7 @@ def create(): Unit = {
 .cal:hover { background: var(--hover); }
 .cal label { display: flex; align-items: center; gap: .55rem; padding: .3rem .2rem; cursor: pointer; min-width: 0; }
 .cal input { width: 16px; height: 16px; margin: 0; flex: none; }
+.sub { flex: none; }
 .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: .88rem; }
 .hint { color: var(--muted); padding: .3rem .4rem; }
 .more { opacity: 0; }

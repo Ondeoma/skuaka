@@ -135,8 +135,37 @@ object TeamAccess {
  */
 final case class CalendarDto(id: UUID, name: String, description: String, color: String, myColor: Option[String], visible: Boolean,
                              role: String, owner: UserBrief, primary: Boolean, publicLink: Option[PublicLinkDto], teamAccess: String,
-                             viaTeam: Boolean) derives Encoder.AsObject, Decoder {
+                             viaTeam: Boolean, subscription: Option[SubscriptionDto] = None) derives Encoder.AsObject, Decoder {
   def displayColor: String = myColor.getOrElse(color)
+  /** 予定を入れられるか（編集の権限があり、URL を購読したカレンダーでない）. */
+  def writable: Boolean = CalRole.rank(role) >= CalRole.rank(CalRole.Edit) && subscription.isEmpty
+}
+
+/**
+ * iCalendar の URL を購読したカレンダー（予定は読み取りだけ. 定期的に読み直す）.
+ * url は所有者だけに返す（Google カレンダーの非公開 URL などは秘密の値なので）. syncedAt は最後に読んだ時刻（UTC の ISO 8601）、error は失敗の理由.
+ */
+final case class SubscriptionDto(url: Option[String], syncedAt: Option[String], error: Option[String]) derives Encoder.AsObject, Decoder
+
+/** iCalendar の URL を購読する. name を省くと、iCalendar に書かれたカレンダーの名前（なければ URL のホスト名）. */
+final case class SubscribeReq(url: String, name: Option[String] = None, color: Option[String] = None) derives Encoder.AsObject, Decoder
+
+/**
+ * iCalendar の取り込みの結果. created・updated・removed は作った・変えた・消した予定の数（同じファイルを取り込み直すと、変わった予定だけを上書きする）.
+ * skipped は読み取れなかった予定、approximated は skuaka で表せない繰り返しを近似した予定の数.
+ */
+final case class ImportResultDto(created: Int, updated: Int, removed: Int, skipped: Int, approximated: Int) derives Encoder.AsObject, Decoder {
+  def summary: String = {
+    val parts = List(s"新しい予定 $created 件", s"更新 $updated 件") ++
+      Option.when(removed > 0)(s"削除 $removed 件") ++ Option.when(skipped > 0)(s"読み取れなかった予定 $skipped 件") ++
+      Option.when(approximated > 0)(s"繰り返しを近似した予定 $approximated 件")
+    parts.mkString("・")
+  }
+}
+
+/** 取り込める iCalendar の大きさ（バイト）. */
+object IcsImport {
+  val MaxBytes: Int = 10 * 1024 * 1024
 }
 
 /**

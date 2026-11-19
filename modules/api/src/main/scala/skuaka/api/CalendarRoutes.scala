@@ -5,7 +5,7 @@ import cats.syntax.all.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
 import skuaka.auth.Crypto
-import skuaka.core.{Ics, IcsEvent}
+import skuaka.core.{Ics, IcsEvent, Time}
 import skuaka.db.*
 import skuaka.shared.*
 
@@ -13,8 +13,8 @@ import java.time.Instant
 import java.util.UUID
 
 /** カレンダー・共有・表示の設定・iCalendar の配信. */
-final class CalendarRoutes(calendars: CalendarStore, events: EventStore, users: UserStore, val sessions: SessionAuth, cfg: ApiConfig)
-    extends RouteSupport:
+final class CalendarRoutes(calendars: CalendarStore, events: EventStore, users: UserStore, val sessions: SessionAuth, cfg: ApiConfig,
+    importer: Option[CalendarImporter] = None) extends RouteSupport:
 
   private def link(r: CalendarRow): Option[PublicLinkDto] =
     r.publicToken.map(t => PublicLinkDto(s"${cfg.publicUrl}/p/$t", s"${cfg.publicUrl}/ics/$t.ics", r.publicAccess))
@@ -23,7 +23,8 @@ final class CalendarRoutes(calendars: CalendarStore, events: EventStore, users: 
     calendars.owners(rows.map(_.ownerId)).map { owners =>
       rows.map { r =>
         CalendarDto(r.id, r.name, r.description, r.color, r.myColor, r.visible, r.role,
-          owner(owners, r.ownerId), r.primary, if r.role == CalRole.Owner then link(r) else None, r.teamAccess, r.viaTeam)
+          owner(owners, r.ownerId), r.primary, if r.role == CalRole.Owner then link(r) else None, r.teamAccess, r.viaTeam,
+          r.sourceUrl.map(url => SubscriptionDto(Option.when(r.role == CalRole.Owner)(url), r.syncedAt.map(_.toString), r.syncError)))
       }
     }
 
@@ -58,12 +59,54 @@ final class CalendarRoutes(calendars: CalendarStore, events: EventStore, users: 
       case None    => err(Status.NotFound, "カレンダーが見つかりません")
     }
 
+  /** 取り込み・購読ができないとき. */
+  private def withImporter(f: CalendarImporter => IO[Response[IO]]): IO[Response[IO]] =
+    importer.fold(err(Status.NotFound, "このサーバーでは外部のカレンダーを取り込めません"))(f)
+
+  /**
+   * iCalendar のファイルの取り込み（本文は iCalendar の文字列. 大きなファイルを受けるため、ほかの API と本文の上限を分ける）.
+   * 予定を入れられるカレンダーにだけ取り込める. 同じファイルを取り込み直すと、変わった予定だけを上書きする.
+   */
+  val importRoutes: HttpRoutes[IO] = HttpRoutes.of[IO] {
+    case req @ POST -> Root / "api" / "calendars" / UuidVar(id) / "import" =>
+      withCalendar(req, id, CalRole.Edit) { (u, c) =>
+        if c.subscribed then err(Status.BadRequest, "URL を購読したカレンダーには取り込めません")
+        else withImporter { im =>
+          // 本文はそのままの文字列（circe の EntityDecoder に取られないよう bodyText で読む. 文字コードの指定がなければ UTF-8）
+          req.bodyText.compile.string.attempt.flatMap {
+            case Left(_: org.http4s.server.middleware.EntityLimiter.EntityTooLarge) =>
+              err(Status.PayloadTooLarge, s"ファイルが大きすぎます（${IcsImport.MaxBytes / 1024 / 1024}MB まで）")
+            case Left(_) => err(Status.BadRequest, "ファイルを読めませんでした")
+            case Right(text) =>
+              val zone = Time.zone(u.timezone).getOrElse(java.time.ZoneOffset.UTC)
+              im.importText(id, u.id, text, zone, removeMissing = false).flatMap {
+                case Left(e)       => err(Status.BadRequest, e)
+                case Right((r, _)) => Ok(r)
+              }
+          }
+        }
+      }
+  }
+
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "api" / "calendars" =>
       authed(req)(u => calendars.list(u.id).flatMap(dtos).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "calendars" =>
       authed(req)(u => body[CalendarReq](req)(r => valid(checkReq(r))(ok => calendars.create(u.id, ok).flatMap(one(u, _)))))
+
+    // iCalendar の URL を購読する（読めたらカレンダーを作る. 予定は読み取りだけで、定期的に読み直す）
+    case req @ POST -> Root / "api" / "calendars" / "subscribe" =>
+      authed(req)(u => body[SubscribeReq](req)(r => withImporter(_.subscribe(u, r).flatMap(_.fold(err(Status.BadRequest, _), one(u, _))))))
+
+    // 購読を今すぐ読み直す（所有者だけ）
+    case req @ POST -> Root / "api" / "calendars" / UuidVar(id) / "sync" =>
+      withCalendar(req, id, CalRole.Owner) { (u, c) =>
+        (c.sourceUrl, importer) match
+          case (Some(url), Some(im)) =>
+            im.sync(Subscription(id, c.ownerId, url)).flatMap(_.fold(e => err(Status.BadGateway, s"読み直せませんでした: $e"), _ => one(u, id)))
+          case _ => err(Status.BadRequest, "URL を購読したカレンダーではありません")
+      }
 
     case req @ PUT -> Root / "api" / "calendars" / UuidVar(id) =>
       withCalendar(req, id, CalRole.Owner)((u, _) => body[CalendarReq](req)(r => valid(checkReq(r))(ok => calendars.update(id, ok) *> one(u, id))))

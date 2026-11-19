@@ -3,12 +3,13 @@ import skuaka.web.*
 import skuaka.shared.*
 
 import java.util.UUID
+import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 
 // カレンダーの設定と共有（所有者: 名前・色・説明・共有の相手・iCalendar の配信・削除. ほかの人: 自分の表示の色・外す）
 case class Props(calId: UUID)
 
 case class State(name: RV[String], color: RV[String], desc: RV[String], access: RV[String], members: RV[List[MemberDto]] = RV(Nil),
-                 role: RV[String] = RV(CalRole.View), linkAccess: RV[String] = RV(CalRole.Busy))
+                 role: RV[String] = RV(CalRole.View), linkAccess: RV[String] = RV(CalRole.Busy), syncing: RV[Boolean] = RV(false))
 
 def cal(props: Props): Option[CalendarDto] = Store.calendar(props.calId)
 
@@ -38,6 +39,21 @@ def ownerText(props: Props) = current(props).mapC(_.map { c =>
 def hasMembers(s: State) = s.members.mapC(_.nonEmpty)
 def leaveLabel(props: Props) = current(props).mapC(c => if (c.exists(_.viaTeam)) "一覧から外す（あとで追加し直せます）" else "一覧から外す")
 def myColor(props: Props) = current(props).mapC(_.map(_.displayColor).getOrElse(""))
+
+// iCalendar の URL の購読（所有者だけに URL が返る）と、ファイルの取り込み
+def subscription(props: Props) = current(props).mapC(_.flatMap(_.subscription))
+def isSub(props: Props) = subscription(props).mapC(_.isDefined)
+def subUrl(props: Props) = subscription(props).mapC(_.flatMap(_.url).getOrElse(""))
+def syncedText(props: Props) = subscription(props).mapC(_.flatMap(_.syncedAt).fold("まだ読んでいません")(t => s"${Cal.longLabel(Cal.dateOf(t))} ${Cal.time(t)}"))
+def syncError(props: Props) = subscription(props).mapC(_.flatMap(_.error).getOrElse(""))
+def hasSyncError(props: Props) = syncError(props).mapC(_.nonEmpty)
+def syncNow(s: State, props: Props): Unit = if (!s.syncing.v) {
+  s.syncing := true
+  val f = Api.syncCalendar(props.calId)
+  f.onComplete(_ => { s.syncing := false; reload() })
+  Store.report(f)(_ => Store.toast("読み直しました"))
+}
+def importFile(props: Props, e: org.scalajs.dom.Event): Unit = IcsFile.importFrom(e, props.calId)(())
 
 
 def reload(): Unit = Store.report(Store.loadCalendars())(_ => Store.load())
@@ -101,6 +117,24 @@ val linkAccesses: List[(String, String)] = List(CalRole.Busy, CalRole.View).map(
           「予定あり・なしのみ」では予定のある時間だけが見え、題名・場所・説明・ゲストは見えません。</p>
         <p><button type="submit" class="primary">保存</button></p>
       </form>
+      <template v-if="isSub(props)">
+        <h3>購読</h3>
+        <p class="muted small">iCalendar の URL を購読したカレンダーです。予定は読み取りだけで、1時間ごとに読み直します。
+          購読をやめるには「カレンダーを削除」を押します（元のカレンダーの予定は消えません）。</p>
+        <div class="field"><span>iCalendar の URL</span>
+          <div class="row"><input type="text" class="grow" readonly :value="subUrl(props)">
+            <button @click='Dom.copy(subUrl(props).v, "URL をコピーしました")'>コピー</button></div>
+        </div>
+        <p class="small">最後に読んだ時刻: {{ syncedText(props) }}</p>
+        <p v-if="hasSyncError(props)" class="error small">読めませんでした: {{ syncError(props) }}</p>
+        <p><button @click="syncNow(s, props)" :disabled="s.syncing.v">{{ if (s.syncing.v) "読み直しています…" else "今すぐ読み直す" }}</button></p>
+      </template>
+      <template v-else>
+        <h3>ファイルから取り込む</h3>
+        <p class="muted small">ほかのカレンダーから書き出した iCalendar（.ics）のファイルの予定を、このカレンダーに写します。
+          同じファイルを取り込み直すと、重ならずに変わった予定だけを上書きします。</p>
+        <label class="btn">iCalendar（.ics）のファイルを選ぶ<input type="file" accept=".ics,text/calendar" class="hidden-file" @change="importFile(props, event)"></label>
+      </template>
       <h3>共有</h3>
       <p class="muted small">共有した人は、サイドバーの「他のカレンダー」でこのカレンダーを見られます。</p>
       <div class="row add">

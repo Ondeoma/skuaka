@@ -107,3 +107,57 @@ class ExpandSkipSpec extends munit.FunSuite:
     val line = "SUMMARY:" + "🎉" * 30
     assert(Ics.fold(line).split("\r\n ").forall(p => !Character.isLowSurrogate(p.head) && !Character.isHighSurrogate(p.last)))
   }
+
+  // ---------------------------------------------------------------- BYMONTHDAY・BYMONTH・BYSETPOS
+
+  private def dates(start: String, rrule: String, n: Int = 6): List[String] =
+    val r = Recurrence.parse(rrule).flatMap(_.valid.toOption).getOrElse(fail(s"読めない: $rrule"))
+    val d = LocalDate.parse(start)
+    Expand.all(Span.AllDay(d, d), tokyo, r).take(n).toList.map { case Span.AllDay(s, _) => s.toString; case x => x.toString }
+
+  test("毎月15日と末日（2月は28日）") {
+    assertEquals(dates("2027-01-15", "FREQ=MONTHLY;BYMONTHDAY=15,-1"),
+      List("2027-01-15", "2027-01-31", "2027-02-15", "2027-02-28", "2027-03-15", "2027-03-31"))
+  }
+
+  test("毎月31日（31日のない月は飛ばす）") {
+    assertEquals(dates("2027-01-31", "FREQ=MONTHLY;BYMONTHDAY=31", 4), List("2027-01-31", "2027-03-31", "2027-05-31", "2027-07-31"))
+  }
+
+  test("毎月の最終平日（BYSETPOS）・第1と第3月曜日") {
+    assertEquals(dates("2027-01-01", "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1", 4), List("2027-01-29", "2027-02-26", "2027-03-31", "2027-04-30"))
+    assertEquals(dates("2027-01-01", "FREQ=MONTHLY;BYDAY=1MO,3MO", 4), List("2027-01-04", "2027-01-18", "2027-02-01", "2027-02-15"))
+  }
+
+  test("13日の金曜日（日にちを曜日で絞る）") {
+    assertEquals(dates("2026-01-01", "FREQ=MONTHLY;BYMONTHDAY=13;BYDAY=FR", 3), List("2026-02-13", "2026-03-13", "2026-11-13"))
+  }
+
+  test("毎年: 3月と9月の第2日曜日・11月の第4木曜日・年の第1月曜日・1月と7月の1日") {
+    assertEquals(dates("2027-01-01", "FREQ=YEARLY;BYMONTH=3,9;BYDAY=2SU", 4), List("2027-03-14", "2027-09-12", "2028-03-12", "2028-09-10"))
+    assertEquals(dates("2026-01-01", "FREQ=YEARLY;BYMONTH=11;BYDAY=4TH", 2), List("2026-11-26", "2027-11-25"))
+    assertEquals(dates("2026-01-01", "FREQ=YEARLY;BYDAY=1MO", 2), List("2026-01-05", "2027-01-04"))
+    assertEquals(dates("2026-01-01", "FREQ=YEARLY;BYMONTH=1,7;BYMONTHDAY=1", 3), List("2026-01-01", "2026-07-01", "2027-01-01"))
+  }
+
+  test("毎日・毎週を月で絞る（BYMONTH）") {
+    assertEquals(dates("2026-11-29", "FREQ=DAILY;BYMONTH=12", 3), List("2026-12-01", "2026-12-02", "2026-12-03"))
+    assertEquals(dates("2026-11-01", "FREQ=WEEKLY;BYDAY=MO;BYMONTH=1", 2), List("2027-01-04", "2027-01-11"))
+  }
+
+  test("回数の指定は BYSETPOS で選んだあとの回を数える. RRULE の書き戻しと説明") {
+    assertEquals(dates("2027-01-01", "FREQ=MONTHLY;BYMONTHDAY=1,15;COUNT=3", 10), List("2027-01-01", "2027-01-15", "2027-02-01"))
+    val r = Recurrence.parse("FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1").get
+    assertEquals(Recurrence.parse(r.toRrule), Some(r))
+    assertEquals(r.describe, "毎月 平日（月〜金）のうち最後")
+    assertEquals(Recurrence(Recurrence.Monthly, byMonthDay = List(-1, 15)).describe, "毎月 15日・末日")
+    assertEquals(Recurrence(Recurrence.Yearly, byMonth = List(3), byDay = List("2SU")).describe, "毎年 3月 第2日曜日")
+    assertEquals(Recurrence(Recurrence.Monthly, byMonthDay = List(13), byDay = List("FR")).describe, "毎月 13日で金曜日のとき")
+    assert(Recurrence(Recurrence.Weekly, byDay = List("1MO")).valid.isLeft)
+    assert(Recurrence(Recurrence.Monthly, byMonthDay = List(32)).valid.isLeft)
+  }
+
+  test("古い形の JSON（新しい項目のないもの）も読める") {
+    import io.circe.parser.decode
+    assertEquals(decode[Recurrence]("""{"freq":"WEEKLY","interval":1,"byDay":["MO"]}"""), Right(Recurrence(Recurrence.Weekly, byDay = List("MO"))))
+  }

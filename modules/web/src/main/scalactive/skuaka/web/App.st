@@ -108,6 +108,7 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
   <EventDetail v-for="o in details" :key="o" :occ="o" />
   <CalendarSettings v-for="c in settings" :key="c" :calId="c" />
   <TeamCalendars v-if="Store.teamPicker" />
+  <AddCalendar v-if="Store.addCalendar" />
   <Modal v-if="Keys.help" :onClose="_ => Keys.help := false">
     <h2>キーボードの操作</h2>
     <table class="keys"><tr v-for="k in Keys.list"><td><kbd>{{ k._1 }}</kbd></td><td>{{ k._2 }}</td></tr></table>
@@ -136,10 +137,6 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
 .title { font-size: 1.3rem; font-weight: 500; margin: 0 0 0 .4rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spacer { flex: 1; }
 .search input { width: 240px; border-radius: 999px; background: var(--side); }
-.segs { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
-.seg { border: none; border-radius: 0; padding: .35rem .9rem; background: transparent; }
-.seg + .seg { border-left: 1px solid var(--line); }
-.seg.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
 .me { position: relative; }
 .me-btn { padding: .15rem; border-radius: 999px; }
 .menu { position: absolute; right: 0; top: 2.8rem; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);

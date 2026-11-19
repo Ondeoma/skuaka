@@ -128,7 +128,8 @@ final class EventRoutes(events: EventStore, calendars: CalendarStore, users: Use
   /** 予定を書き込めるカレンダーか. */
   private def writable(u: User, calendarId: UUID)(f: => IO[Response[IO]]): IO[Response[IO]] =
     calendars.get(u.id, calendarId).flatMap {
-      case Some(c) if CalRole.rank(c.role) >= CalRole.rank(CalRole.Edit) => f
+      case Some(c) if c.writable => f
+      case Some(c) if c.subscribed => err(Status.Forbidden, "URL を購読したカレンダーには予定を入れられません（読み取りだけです）")
       case _ => err(Status.Forbidden, "このカレンダーには予定を入れられません")
     }
 
