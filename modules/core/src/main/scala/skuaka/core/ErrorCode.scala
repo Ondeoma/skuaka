@@ -30,6 +30,9 @@ enum ErrorCode(val code: String, val status: Int, val message: String) extends s
   case McpTokenRequired extends ErrorCode("SKUAKA-1022", 401, "API トークン（Authorization: Bearer）が必要です")
   case LoginFailed extends ErrorCode("SKUAKA-1023", 401, "ログインできませんでした")
   case PageNotFound extends ErrorCode("SKUAKA-1024", 404, "ページが見つかりません")
+  case LoginRejectedByIdp
+    extends ErrorCode("SKUAKA-1025", 401, "IdP がログインを断りました。時間をおいてもう一度試すか、管理者に問い合わせてください。")
+  case TooManyRequests extends ErrorCode("SKUAKA-1026", 429, "短い時間に要求が多すぎます。しばらく待ってからもう一度試してください")
   case CalendarNotFound extends ErrorCode("SKUAKA-2001", 404, "カレンダーが見つかりません")
   case CalendarOwnerOnly extends ErrorCode("SKUAKA-2002", 403, "カレンダーの所有者だけができます")
   case CalendarNotEditable extends ErrorCode("SKUAKA-2003", 403, "このカレンダーの予定は変更できません")

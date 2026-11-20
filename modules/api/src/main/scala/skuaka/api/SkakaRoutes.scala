@@ -1,9 +1,9 @@
 package skuaka.api
 
+import sbirds.shared.SafePath
 import cats.effect.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.headers.Location
 import sbirds.auth.Crypto
 import skuaka.shared.*
 import skuaka.core.ErrorCode
@@ -75,9 +75,6 @@ final class SkakaRoutes(skaka: Option[SkakaService], val sessions: SessionAuth, 
     interactive(req)(u => enabled(s => s.disconnect(u.id) *> NoContent()))
 
   private val callback = s"${cfg.publicUrl}/api/integrations/skaka/callback"
-
-  private def redirect(to: String): IO[Response[IO]] =
-    IO.pure(Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)), "Cache-Control" -> "no-store"))
 
   /** 戻り先（同じサイトのパスだけ）に結果を付けて戻る. */
   private def done(returnTo: String, result: String): IO[Response[IO]] = {

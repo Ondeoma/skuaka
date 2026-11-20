@@ -1,52 +1,18 @@
 package skuaka.app
 
+import sbirds.http.Env.*
+import sbirds.db.*
 import cats.effect.*
-import cats.syntax.all.*
 import skuaka.api.*
 import sbirds.auth.OidcConfig
-import skuaka.db.*
 
 import scala.concurrent.duration.*
 
 /** 設定は環境変数から読む. */
 object Config {
-  private def opt(name: String): Option[String] = sys.env.get(name).map(_.trim).filter(_.nonEmpty)
-  private def int(name: String): Option[Int] = opt(name).flatMap(_.toIntOption)
-  private def enabled(name: String): Boolean = opt(name).exists(_.equalsIgnoreCase("true"))
-  private def required(name: String): Either[String, String] = opt(name).toRight(s"環境変数 $name を設定してください")
-  private def list(name: String): List[String] =
-    opt(name).toList.flatMap(_.split(Array(',', ' ')).map(_.trim).filter(_.nonEmpty))
-
   private def local(url: String): Boolean =
     scala.util.Try(java.net.URI.create(url).getHost).toOption.flatMap(Option(_)).map(_.toLowerCase)
       .exists(h => Set("localhost", "127.0.0.1", "[::1]").contains(h) || h.endsWith(".localhost"))
-
-  /** OAUTH_CLIENTS: [{"id":"skakapo","secret":"…","redirectUri":"https://…/callback","name":"skakapo","scopes":["read","write"]}]（scopes は省くと read だけ） */
-  private def oauthClients: Either[String, List[OAuthClient]] =
-    opt("OAUTH_CLIENTS").fold(Right(Nil)) { s =>
-      io.circe.parser.parse(s).flatMap(_.as[List[io.circe.Json]]).left.map(_ =>
-        "OAUTH_CLIENTS は JSON の配列で指定してください"
-      ).flatMap(_.traverse { j =>
-        val c = j.hcursor
-        (c.get[String]("id"), c.get[String]("secret"), c.get[String]("redirectUri")).tupled.toOption
-          .filter((id, sec, uri) =>
-            id.nonEmpty && sec.length >= 16 && (uri.startsWith("https://") || uri.startsWith("http://localhost"))
-          )
-          .map((id, sec, uri) =>
-            OAuthClient(
-              id,
-              sec,
-              uri,
-              c.get[String]("name").getOrElse(id),
-              c.get[List[String]]("scopes").toOption.map(_.filter(Set(
-                "read",
-                "write"
-              ))).filter(_.nonEmpty).getOrElse(List("read"))
-            )
-          )
-          .toRight("OAUTH_CLIENTS の各要素には id・secret（16文字以上）・redirectUri（https://）を指定してください")
-      })
-    }
 
   def load: IO[AppConfig] = IO.fromEither(
     (for {
@@ -79,15 +45,14 @@ object Config {
         case (None, None, None) => Right(None)
         case _ => Left("SKAKA_URL・SKAKA_CLIENT_ID・SKAKA_CLIENT_SECRET は3つとも設定してください")
       }
-      proxies <- list("TRUSTED_PROXIES").traverse(s =>
-        RateLimitConfig.proxy(s).toRight(s"TRUSTED_PROXIES の「$s」は IP か CIDR で書いてください")
-      )
+      rate <- sbirds.http.RateLimitConfig.fromEnv()
       secret <- opt("APP_SECRET") match {
         case Some(s) if s.length < 16 => Left("APP_SECRET は16文字以上にしてください")
         case None if skaka.isDefined => Left("skaka と連携するには APP_SECRET（16文字以上の秘密の値）を設定してください")
         case s => Right(s)
       }
-      clients <- oauthClients
+      // OAUTH_CLIENTS: 認可を求める兄弟のサービス（scopes は省くと read だけ. 形は sbirds.oauth.OAuthClient.parse）
+      clients <- sbirds.oauth.OAuthClient.fromEnv()
     } yield AppConfig(
       port = int("HTTP_PORT").getOrElse(8080),
       db = DbConfig(dbUrl, dbUser, dbPass, int("DATABASE_POOL_SIZE").getOrElse(10)),
@@ -98,7 +63,7 @@ object Config {
         sessionTtl = int("SESSION_DAYS").getOrElse(14).days,
         devLogin = devLogin,
         rateLimit =
-          RateLimitConfig(int("RATE_LIMIT_AUTH").getOrElse(20), int("RATE_LIMIT_PUBLIC").getOrElse(120), proxies),
+          rate,
         oauthClients = clients
       ),
       staticDir = opt("STATIC_DIR"),

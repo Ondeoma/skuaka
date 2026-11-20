@@ -1,5 +1,9 @@
 package skuaka.api
 
+import sbirds.shared.SafePath
+import sbirds.http.{RateLimitConfig, SecurityHeaders}
+import sbirds.net.NetGuard
+import sbirds.db.*
 import cats.effect.*
 import cats.syntax.all.*
 import io.circe.Json
@@ -127,7 +131,7 @@ class FlowSpec extends munit.CatsEffectSuite {
         skuaka.auth.SecretBox("test-app-secret-0123456789")
       )
       val importer =
-        new CalendarImporter(Client.fromHttpApp(fakeIcs.orNotFound), cals, events, users, UrlGuard.allowAll)
+        new CalendarImporter(Client.fromHttpApp(fakeIcs.orNotFound), cals, events, users, NetGuard.Policy.allowAll)
       val app = ApiRoutes(
         Some(oidc),
         users,
@@ -163,7 +167,11 @@ class FlowSpec extends munit.CatsEffectSuite {
       r2 <- idp.run(Request[IO](Method.POST, uri"/authorize").withEntity(form))
       cb = location(r2)
       _ = assertEquals(cb.path.renderString, "/auth/callback")
-      r3 <- app.run(Request[IO](Method.GET, Uri(path = cb.path, query = cb.query)))
+      // ログインを始めたブラウザの Cookie がなければ断る（他人のログインを踏ませる攻撃を防ぐ）
+      r0 <- app.run(Request[IO](Method.GET, Uri(path = cb.path, query = cb.query)))
+      _ = assertEquals(r0.status, Status.BadRequest, "callback without the login cookie")
+      back = Request[IO](Method.GET, Uri(path = cb.path, query = cb.query))
+      r3 <- app.run(r1.cookies.foldLeft(back)((q, c) => q.addCookie(c.name, c.content)))
       _ = assertEquals(r3.status, Status.Found, "callback")
       _ = assertEquals(location(r3).renderString, "/week")
     } yield r3.cookies.find(_.name == "skuaka_session").map(_.content).getOrElse(fail("no session cookie"))
@@ -195,6 +203,22 @@ class FlowSpec extends munit.CatsEffectSuite {
       gone <- call(t, Method.GET, "/api/me")
       _ = assertEquals(gone.status, Status.Unauthorized)
     } yield ()
+  }
+
+  test("callback: IdP の error・error_description の文言は画面に出さない（固定の文言だけ）") {
+    val (_, app, _) = fixture()
+    app.run(Request[IO](
+      Method.GET,
+      uri"/auth/callback".withQueryParams(
+        Map("error" -> "access_denied_XYZ", "error_description" -> "管理者に 03-0000-0000 へ電話してください", "state" -> "s")
+      )
+    )).flatMap { r =>
+      assertEquals(r.status, Status.Unauthorized)
+      r.bodyText.compile.string.map { html =>
+        assert(html.contains(skuaka.core.ErrorCode.LoginRejectedByIdp.message), html)
+        assert(!html.contains("access_denied_XYZ") && !html.contains("03-0000-0000"), html)
+      }
+    }
   }
 
   test("不正な state・X-Skuaka のない更新・未ログインは拒否する") {
@@ -263,7 +287,7 @@ class FlowSpec extends munit.CatsEffectSuite {
       val r = Request[IO](Method.GET, Uri.unsafeFromString(path)).withAttribute(Request.Keys.ConnectionInfo, conn)
       xff.fold(r)(v => r.putHeaders(Header.Raw(CIString("X-Forwarded-For"), v)))
     }
-    val trusted = List("10.0.0.0/8", "192.0.2.7").flatMap(RateLimitConfig.proxy)
+    val trusted = List("10.0.0.0/8", "192.0.2.7").flatMap(sbirds.http.RateLimit.proxy)
     assertEquals(
       sbirds.http.RateLimit.clientKey(from("10.1.2.3", "/", Some("6.6.6.6, 203.0.113.9")), trusted),
       Some("203.0.113.9")
@@ -1321,7 +1345,7 @@ class FlowSpec extends munit.CatsEffectSuite {
   }
 
   test("購読: 内部のアドレス（localhost・社内のネットワーク・メタデータ）は読みに行かない") {
-    def blocked(ip: String) = UrlGuard.blocked(java.net.InetAddress.getByName(ip))
+    def blocked(ip: String) = !NetGuard.allowed(java.net.InetAddress.getByName(ip), NetGuard.Allow.PublicOnly)
     List(
       "127.0.0.1",
       "10.1.2.3",
@@ -1333,12 +1357,20 @@ class FlowSpec extends munit.CatsEffectSuite {
       "::1",
       "fd00::1",
       "fe80::1",
-      "::ffff:10.0.0.1"
+      "::ffff:10.0.0.1",
+      "::10.0.0.1",
+      "64:ff9b::a9fe:a9fe",
+      "2002:7f00:1::1",
+      // IPv4 を埋め込んだ IPv6 は、中が外のアドレスでも読みに行かない（sbirds.net.NetAddress の判定表）
+      "64:ff9b::808:808",
+      "2002:808:808::1"
     )
       .foreach(ip => assert(blocked(ip), ip))
-    List("8.8.8.8", "142.250.196.110", "2001:4860:4860::8888").foreach(ip => assert(!blocked(ip), ip))
-    UrlGuard.publicOnly.check(java.net.URI.create("http://localhost:8095/x.ics")).map(r =>
-      assertEquals(r, Left(UrlGuard.NotPublic))
+    List("8.8.8.8", "142.250.196.110", "2001:4860:4860::8888").foreach(ip =>
+      assert(!blocked(ip), ip)
+    )
+    NetGuard.check("http://localhost:8095/x.ics", NetGuard.Policy.publicOnly).map(r =>
+      assertEquals(r.left.map(CalendarImporter.rejected), Left(CalendarImporter.NotPublic))
     )
   }
 }

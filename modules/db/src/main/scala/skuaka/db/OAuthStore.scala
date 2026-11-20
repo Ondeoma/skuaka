@@ -1,5 +1,6 @@
 package skuaka.db
 
+import sbirds.oauth.OAuthCodeStore
 import cats.effect.*
 import cats.syntax.all.*
 import doobie.*
@@ -9,26 +10,11 @@ import doobie.postgres.implicits.*
 import java.time.Instant
 import java.util.UUID
 
-/** scope は API トークンのスコープ（read か write）. */
-final case class OAuthCode(clientId: String, redirectUri: String, userId: UUID, codeChallenge: String, scope: String)
-
 /** 認可で発行するトークン（API トークンの値と、更新用の refresh token）. 値はハッシュだけを保存する. */
 final case class OAuthGrant(prefix: String, tokenHash: Array[Byte], refreshHash: Array[Byte], expires: Instant)
 
-/** OAuth の認可コードと、認可で発行した API トークン. */
-final class OAuthStore(xa: Transactor[IO]) extends TxStore(xa) {
-
-  def createCode(hash: Array[Byte], c: OAuthCode, expires: Instant): IO[Unit] = tx(
-    sql"""insert into oauth_code (code_hash, client_id, redirect_uri, user_id, code_challenge, scope, expires_at)
-          values ($hash, ${c.clientId}, ${c.redirectUri}, ${c.userId}, ${c.codeChallenge}, ${c.scope}, $expires)""".update.run *>
-      sql"delete from oauth_code where expires_at < now() - interval '1 hour'".update.run.void
-  )
-
-  /** 認可コードを使う（有効期限内で、まだ使っていないものだけ. 使ったら使用済みにする）. */
-  def consumeCode(hash: Array[Byte]): IO[Option[OAuthCode]] = tx(
-    sql"""update oauth_code set used_at = now() where code_hash = $hash and used_at is null and expires_at > now()
-          returning client_id, redirect_uri, user_id, code_challenge, scope""".query[OAuthCode].option
-  )
+/** 認可で発行した API トークン. 認可コード（oauth_code. scope は API トークンのスコープ〈read か write〉）は sbirds.oauth.OAuthCodeStore. */
+final class OAuthStore(xa: Transactor[IO]) extends OAuthCodeStore(xa) {
 
   /** そのユーザーにそのクライアントが以前に発行したトークンを失効させ、新しいトークンを登録する. */
   def replaceToken(userId: UUID, clientId: String, name: String, scope: String, g: OAuthGrant): IO[UUID] = tx {

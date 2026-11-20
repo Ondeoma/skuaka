@@ -1,13 +1,13 @@
 package skuaka.api
 
+import sbirds.shared.SafePath
 import cats.effect.*
-import cats.syntax.all.*
 import io.circe.Json
 import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.headers.Location
-import sbirds.auth.{Crypto, LoginDenied, OidcClient}
+import sbirds.auth.{Crypto, LoginResult, OidcClient}
+import sbirds.http.OidcLoginFlow
 import skuaka.auth.ApiKeys
 import skuaka.db.*
 import skuaka.shared.*
@@ -42,60 +42,71 @@ final class AuthRoutes(oidc: Option[OidcClient],
     case req @ DELETE -> Root / "api" / "tokens" / UuidVar(id) => deleteToken(req, id)
   }
 
-  private def getAuthLogin(req: Request[IO]): IO[Response[IO]] = {
-    val back = SafePath.of(param(req, "returnTo"))
-    oidc match {
-      case Some(o) =>
-        val state = Crypto.randomToken(); val verifier = Crypto.randomToken(48); val nonce = Crypto.randomToken()
-        users.saveLoginState(state, verifier, nonce, back) *>
-          o.authorizationUri(state, verifier, nonce).flatMap(u => redirect(u.renderString))
-      case None if cfg.devLogin => redirect(s"/login?returnTo=${java.net.URLEncoder.encode(back, "UTF-8")}")
-      case None => err(ErrorCode.OidcNotConfigured)
+  private def getAuthLogin(req: Request[IO]): IO[Response[IO]] = OidcLoginFlow.login(flow)(req)
+
+  private def getAuthCallback(req: Request[IO]): IO[Response[IO]] = OidcLoginFlow.callback(flow)(req)
+
+  /** OIDC のログインの流れ（sbirds.http.OidcLoginFlow）に差し込む、skuaka の部分. */
+  private val flow = new OidcLoginFlow.Host[LoginResult] {
+    val idp = oidc.map(OidcLoginFlow.Idp(_))
+
+    /**
+     * ログインを始めたブラウザの印（state）. IdP から戻ったとき、同じブラウザかを確かめる
+     * （攻撃者が途中で止めたコールバックの URL を踏ませて、攻撃者のアカウントでログインさせる「ログイン CSRF」を防ぐ）.
+     */
+    val cookie = OidcLoginFlow.StateCookie("skuaka_login", cfg.cookieSecure, maxAge = 600)
+    override def idpErrorParam: Boolean = true
+
+    def returnTo(req: Request[IO]): String = SafePath.of(param(req, "returnTo"))
+    def saveState(state: String, verifier: String, nonce: String, returnTo: String): IO[Unit] =
+      users.saveLoginState(state, verifier, nonce, returnTo)
+    def takeState(state: String): IO[Option[(String, String, String)]] = users.takeLoginState(state)
+    def redirect(to: String): IO[Response[IO]] = AuthRoutes.this.redirect(to)
+
+    def withoutIdp(req: Request[IO], back: String): IO[Response[IO]] =
+      if cfg.devLogin then AuthRoutes.this.redirect(s"/login?returnTo=${java.net.URLEncoder.encode(back, "UTF-8")}")
+      else err(ErrorCode.OidcNotConfigured)
+
+    def failed(req: Request[IO], f: OidcLoginFlow.Failure): IO[Response[IO]] = {
+      import OidcLoginFlow.Failure.*
+      f match {
+        // IdP の error・error_description は URL で差し替えられるので画面には出さず、ログにだけ残す
+        case IdpError(e, d) =>
+          sbirds.observe.Log.report(ErrorCode.LoginRejectedByIdp, OidcLoginFlow.idpErrorLog(e, d)) *>
+            page("ログインできませんでした", ErrorCode.LoginRejectedByIdp.message, Status.Unauthorized)
+        case BrowserMismatch => page("ログインできませんでした", "ログインを始めたブラウザと違います。もう一度ログインしてください。", Status.BadRequest)
+        case Expired => page("ログインできませんでした", "ログインの有効期限が切れました。もう一度ログインしてください。", Status.BadRequest)
+        // 理由の詳細（検証に失敗した項目など）はログにだけ出す
+        case Denied(e) => page("ログインできませんでした", e.getMessage, Status.Forbidden)
+        case Failed(e) =>
+          sbirds.observe.Log.report(ErrorCode.LoginFailed, e.getMessage) *>
+            page("ログインできませんでした", "IdP からの応答を確かめられませんでした。時間をおいてもう一度試してください。", Status.Unauthorized)
+        case NotConfigured => err(ErrorCode.OidcNotConfigured)
+        case ParamsMissing => err(ErrorCode.LoginCodeStateRequired)
+      }
+    }
+
+    // IdP で確かめた後（認可コードを ID トークンに交換して、署名・iss・aud・exp・nonce を確かめた後）
+    def loggedIn(req: Request[IO], res: LoginResult, back: String): IO[Response[IO]] = {
+      val id = res.identity
+      users.upsert(
+        id.sub,
+        id.name,
+        id.email,
+        id.picture.filter(p => p.startsWith("https://") || p.startsWith("http://"))
+      ).flatMap { u =>
+        if u.disabled then page("ログインできませんでした", "このユーザーは無効にされています。", Status.Forbidden)
+        else AuthRoutes.this.loggedIn(u, Some(res.idToken)).flatMap(c => AuthRoutes.this.redirect(back, Some(c)))
+      }
     }
   }
-
-  // IdP から戻ってきたところ（認可コードを ID トークンに交換して、署名・iss・aud・exp・nonce を確かめる）
-  private def getAuthCallback(req: Request[IO]): IO[Response[IO]] =
-    (oidc, param(req, "code"), param(req, "state"), param(req, "error")) match {
-      case (_, _, _, Some(e)) =>
-        page(
-          "ログインできませんでした",
-          s"IdP がログインを断りました（$e ${param(req, "error_description").getOrElse("")}）",
-          Status.Unauthorized
-        )
-      case (Some(o), Some(code), Some(state), None) =>
-        users.takeLoginState(state).flatMap {
-          case None => page("ログインできませんでした", "ログインの有効期限が切れました。もう一度ログインしてください。", Status.BadRequest)
-          case Some((verifier, nonce, back)) =>
-            o.authenticate(code, verifier, nonce, Instant.now()).attempt.flatMap {
-              // 理由の詳細（検証に失敗した項目など）はログにだけ出す
-              case Left(e: LoginDenied) => page("ログインできませんでした", e.getMessage, Status.Forbidden)
-              case Left(e) =>
-                sbirds.observe.Log.report(ErrorCode.LoginFailed, e.getMessage) *>
-                  page("ログインできませんでした", "IdP からの応答を確かめられませんでした。時間をおいてもう一度試してください。", Status.Unauthorized)
-              case Right(res) =>
-                val id = res.identity
-                users.upsert(
-                  id.sub,
-                  id.name,
-                  id.email,
-                  id.picture.filter(p => p.startsWith("https://") || p.startsWith("http://"))
-                ).flatMap { u =>
-                  if u.disabled then page("ログインできませんでした", "このユーザーは無効にされています。", Status.Forbidden)
-                  else loggedIn(u, Some(res.idToken)).flatMap(c => redirect(back, Some(c)))
-                }
-            }
-        }
-      case (None, _, _, _) => err(ErrorCode.OidcNotConfigured)
-      case _ => err(ErrorCode.LoginCodeStateRequired)
-    }
 
   // ログアウト: セッションを消し、IdP にもログアウトを頼む（end_session_endpoint があれば）
   private def postAuthLogout(req: Request[IO]): IO[Response[IO]] =
     sessions.revoke(req).flatMap {
       (idToken, c) =>
-        oidc.traverse(_.logoutUri(idToken, cfg.publicUrl + "/")).map(_.flatten).flatMap { idp =>
-          Ok(Json.obj("redirect" -> idp.fold("/login?loggedOut=1")(_.renderString).asJson)).map(_.addCookie(c))
+        OidcLoginFlow.logoutRedirect(oidc, idToken, cfg.publicUrl + "/", "/login?loggedOut=1").flatMap { to =>
+          Ok(Json.obj("redirect" -> to.asJson)).map(_.addCookie(c))
         }
     }
 
@@ -196,11 +207,6 @@ final class AuthRoutes(oidc: Option[OidcClient],
 
   private def deleteToken(req: Request[IO], id: UUID): IO[Response[IO]] =
     interactive(req)(u => users.revokeToken(u.id, id).ifM(NoContent(), err(ErrorCode.ApiTokenNotFound)))
-
-  private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] = {
-    val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)), "Cache-Control" -> "no-store")
-    IO.pure(cookie.fold(r)(r.addCookie))
-  }
 
   /** 変更した後の自分の情報. */
   private def me(u: User): IO[Response[IO]] = users.find(u.id).flatMap(x => Ok(x.getOrElse(u).me))

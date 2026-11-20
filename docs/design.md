@@ -13,7 +13,7 @@
 - 応答には `X-Content-Type-Options`・`X-Frame-Options: DENY`・`Referrer-Policy` と CSP を付ける（`SecurityHeaders`）。API とエラーの画面は
   何も読み込ませない CSP、画面の配信はスクリプトを自分のサイトと `index.html` の直書き（SHA-256 のハッシュ）だけに絞る CSP。https で公開
   しているときは HSTS も付ける。リクエストの本文は 2MB まで（`ApiRoutes.MaxBody`）。
-- ログインしなくても使える入口（ログインの `/auth/…`、公開リンクの `/api/public/…`・`/ics/…`）は、IP ごとに1分あたりの回数を制限する
+- ログインしなくても使える入口（ログインの `/auth/…`、OAuth の `/oauth/authorize`・`/oauth/token`・`/oauth/revoke`、公開リンクの `/api/public/…`・`/ics/…`）は、IP ごとに1分あたりの回数を制限する
   （`RateLimit`。超えたら 429 と `Retry-After`）。利用者の IP は、`TRUSTED_PROXIES` のプロキシから来た要求だけ `X-Forwarded-For` を右から
   たどって決める（左側はクライアントが書けるので使わない）。IPv6 は /64 ごとにまとめる。数はノードごとのメモリで数える。
 - 開発用のログイン（`DEV_LOGIN`）は名前だけでだれにでもなれるので、`PUBLIC_URL` が localhost のときしか起動しない。

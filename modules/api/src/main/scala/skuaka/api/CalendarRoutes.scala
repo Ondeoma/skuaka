@@ -5,6 +5,8 @@ import cats.syntax.all.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
 import sbirds.auth.Crypto
+import sbirds.http.Errors
+import sbirds.shared.AppError
 import skuaka.core.{ErrorCode, Ics, IcsEvent, Time}
 import skuaka.db.*
 import skuaka.shared.*
@@ -28,6 +30,12 @@ final class CalendarRoutes(calendars: CalendarStore,
     case req @ POST -> Root / "api" / "calendars" / UuidVar(id) / "import" => postCalendarImport(req, id)
   }
 
+  /** iCalendar のファイルの取り込みの要求か（本文の上限を分けるため）. */
+  def isImport(req: Request[IO]): Boolean = req match {
+    case POST -> Root / "api" / "calendars" / UuidVar(_) / "import" => true
+    case _ => false
+  }
+
   private def postCalendarImport(req: Request[IO], id: UUID): IO[Response[IO]] =
     withCalendar(req, id, CalRole.Edit) {
       (u, c) =>
@@ -36,8 +44,8 @@ final class CalendarRoutes(calendars: CalendarStore,
           withImporter { im =>
             // 本文はそのままの文字列（circe の EntityDecoder に取られないよう bodyText で読む. 文字コードの指定がなければ UTF-8）
             req.bodyText.compile.string.attempt.flatMap {
-              case Left(_: org.http4s.server.middleware.EntityLimiter.EntityTooLarge) =>
-                err(ErrorCode.ImportFileTooLarge, s"ファイルが大きすぎます（${IcsImport.MaxBytes / 1024 / 1024}MB まで）")
+              // 本文が上限を超えた（sbirds.http.BodyLimit が CalendarRoutes.importTooLarge で止める）
+              case Left(e: AppError) => Errors.respond(e)
               case Left(_) => err(ErrorCode.ImportFileUnreadable)
               case Right(text) =>
                 val zone = Time.zone(u.timezone).getOrElse(java.time.ZoneOffset.UTC)
@@ -265,4 +273,11 @@ final class CalendarRoutes(calendars: CalendarStore,
   private def withImporter(f: CalendarImporter => IO[Response[IO]]): IO[Response[IO]] =
     importer.fold(err(ErrorCode.ImportNotAvailable))(f)
 
+}
+
+object CalendarRoutes {
+
+  /** 取り込む iCalendar のファイルが大きすぎるときのエラー. */
+  def importTooLarge: AppError =
+    AppError(ErrorCode.ImportFileTooLarge, s"ファイルが大きすぎます（${IcsImport.MaxBytes / 1024 / 1024}MB まで）")
 }

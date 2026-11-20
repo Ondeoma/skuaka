@@ -1,32 +1,27 @@
 package skuaka.api
 
 import cats.effect.*
-import io.circe.Decoder
 import org.http4s.*
-import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.dsl.Http4sDsl
-import org.typelevel.ci.CIString
 import org.http4s.headers.`WWW-Authenticate`
-import org.http4s.server.middleware.EntityLimiter
-import sbirds.http.Errors
+import sbirds.http.{Csrf, Errors, HttpParts, RouteHelpers}
 import sbirds.shared.AppError
 import skuaka.core.ErrorCode
 import skuaka.db.*
 
-import java.util.UUID
-
 /**
- * *Routes に共通の補助（エラー応答・認証・リクエスト本文）.
+ * *Routes に共通の補助（エラー応答・認証）. 本文・クエリ・パスの UUID は sbirds.http.RouteHelpers.
  */
-trait RouteSupport extends Http4sDsl[IO] {
+trait RouteSupport extends RouteHelpers {
   protected def sessions: SessionAuth
+
+  protected def bodyInvalid: sbirds.shared.ErrorCode = ErrorCode.RequestBodyInvalid
 
   /** エラーの応答（コード付きでログに出る）. detail を省くとコードの既定の文言. */
   protected def err(code: ErrorCode, detail: String | Null = null): IO[Response[IO]] =
     Errors.respond(AppError(code, Option(detail)))
 
   /** 画面からの更新の要求に付けるヘッダー. 他のサイトのフォームからは付けられない（CORS の事前確認が要る）ので CSRF を防げる. */
-  private val csrfHeader = CIString("X-Skuaka")
+  private val csrf = Csrf.Policy.headerOnly("X-Skuaka")
 
   private def readOnly(req: Request[IO]): Boolean = Set(Method.GET, Method.HEAD).contains(req.method)
 
@@ -46,7 +41,7 @@ trait RouteSupport extends Http4sDsl[IO] {
 
   private def principal(req: Request[IO])(f: Principal => IO[Response[IO]]): IO[Response[IO]] = {
     val bearer = sessions.bearer(req).isDefined
-    if !bearer && !readOnly(req) && req.headers.get(csrfHeader).isEmpty then
+    if !bearer && Csrf.foreign(req, csrf) then
       err(ErrorCode.CrossSiteRequest)
     else
       sessions.fromRequest(req).flatMap {
@@ -58,18 +53,9 @@ trait RouteSupport extends Http4sDsl[IO] {
       }
   }
 
-  protected def body[A: Decoder](req: Request[IO])(f: A => IO[Response[IO]]): IO[Response[IO]] =
-    req.as[A].attempt.flatMap {
-      case Left(_: EntityLimiter.EntityTooLarge) => err(ErrorCode.RequestTooLarge)
-      case Left(e) => err(ErrorCode.RequestBodyInvalid, s"リクエストの内容が正しくありません: ${e.getMessage.take(200)}")
-      case Right(b) => f(b)
-    }
-
-  protected def param(req: Request[IO], k: String): Option[String] = req.params.get(k).map(_.trim).filter(_.nonEmpty)
-
-  protected object UuidVar {
-    def unapply(s: String): Option[UUID] = scala.util.Try(UUID.fromString(s)).toOption
-  }
+  /** 302（キャッシュさせない）. */
+  override protected def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] =
+    IO.pure(HttpParts.redirect(to, cookie, noStore = true))
 
   /** 結果が Right なら f、Left なら 400. */
   protected def valid[A](e: Either[String, A])(f: A => IO[Response[IO]]): IO[Response[IO]] =

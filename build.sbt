@@ -25,9 +25,13 @@ lazy val libSharedJS = ProjectRef(sbirdsLib, "sharedJS")
 lazy val libObserve = ProjectRef(sbirdsLib, "observe")
 lazy val libAuth = ProjectRef(sbirdsLib, "auth")
 lazy val libHttp = ProjectRef(sbirdsLib, "http")
+lazy val libMcp = ProjectRef(sbirdsLib, "mcp")
 lazy val libPush = ProjectRef(sbirdsLib, "push")
 lazy val libWeb = ProjectRef(sbirdsLib, "web")
 lazy val libDevidp = ProjectRef(sbirdsLib, "devidp")
+lazy val libDb = ProjectRef(sbirdsLib, "db")
+lazy val libNet = ProjectRef(sbirdsLib, "net")
+lazy val libOauth = ProjectRef(sbirdsLib, "oauth")
 
 // http4s のサーバー側（ルートの DSL と JSON）
 val http4sServer = Seq(
@@ -75,7 +79,7 @@ lazy val core = (project in file("modules/core"))
   .settings(commonTest)
 
 lazy val db = (project in file("modules/db"))
-  .dependsOn(core, libObserve)
+  .dependsOn(core, libObserve, libDb, libOauth)
   .settings(commonTest)
   .settings(
     libraryDependencies ++= Seq(
@@ -102,7 +106,7 @@ lazy val devidp = (project in file("modules/devidp"))
   )
 
 lazy val api = (project in file("modules/api"))
-  .dependsOn(core, db, auth, shared.jvm, libObserve, libHttp, libPush, devidp % "test->compile")
+  .dependsOn(core, db, auth, shared.jvm, libObserve, libHttp, libMcp, libPush, libNet, devidp % "test->compile", libOauth)
   .settings(commonTest)
   .settings(
     libraryDependencies ++= http4sServer

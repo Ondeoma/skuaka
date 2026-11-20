@@ -5,6 +5,8 @@ import cats.syntax.all.*
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.headers.{Accept, Location}
+import sbirds.net.NetGuard
+import sbirds.net.NetGuard.Rejected
 import skuaka.core.*
 import skuaka.db.*
 import sbirds.observe.{Log, Metrics}
@@ -16,12 +18,17 @@ import java.time.{Instant, ZoneId, ZoneOffset}
 import java.util.UUID
 import scala.concurrent.duration.*
 
-/** 外部のカレンダーの取り込み（iCalendar のファイル）と、iCalendar の URL の購読（定期的に読み直す）. */
+/**
+ * 外部のカレンダーの取り込み（iCalendar のファイル）と、iCalendar の URL の購読（定期的に読み直す）.
+ * 購読の URL は利用者が決めるので、読みに行く前に policy で確かめる（SSRF の対策. 既定は外部に公開されたアドレスだけ.
+ * 社内のネットワーク・localhost・クラウドのメタデータなどをサーバーから読ませない）.
+ * http には NetGuard.client(policy)（確かめた IP にそのままつなぐ. 転送は追わない）を渡す.
+ */
 final class CalendarImporter(http: Client[IO],
                              calendars: CalendarStore,
                              events: EventStore,
                              users: UserStore,
-                             guard: UrlGuard = UrlGuard.publicOnly,
+                             policy: NetGuard.Policy = NetGuard.Policy.publicOnly,
                              val syncEvery: FiniteDuration = 1.hour) {
 
   /** 読み込む iCalendar の大きさの上限と、転送の回数の上限. */
@@ -89,14 +96,17 @@ final class CalendarImporter(http: Client[IO],
       .toRight("iCalendar の URL（https://… か webcal://…）を入力してください")
   }
 
+  /** 読みに行ってよい URL か（断る理由の文言は skuaka のもの）. */
+  def check(u: Uri): IO[Either[String, Unit]] = NetGuard.check(u, policy).map(_.left.map(CalendarImporter.rejected))
+
   /** URL から iCalendar を読む（転送は MaxRedirects 回まで. 転送先も確かめる）. */
   def fetch(uri: URI, redirects: Int = 0): IO[Either[String, String]] =
-    guard.check(uri).flatMap {
-      case Left(e) => IO.pure(Left(e))
-      case Right(_) =>
-        Uri.fromString(uri.toString) match {
-          case Left(_) => IO.pure(Left("URL が正しくありません"))
-          case Right(u) =>
+    Uri.fromString(uri.toString) match {
+      case Left(_) => IO.pure(Left("URL が正しくありません"))
+      case Right(u) =>
+        check(u).flatMap {
+          case Left(e) => IO.pure(Left(e))
+          case Right(_) =>
             val req = Request[IO](Method.GET, u).putHeaders(
               Accept(MediaType.unsafeParse("text/calendar")),
               "User-Agent" -> "skuaka (iCalendar subscription)"
@@ -118,9 +128,11 @@ final class CalendarImporter(http: Client[IO],
                 case s if s.code == 404 => IO.pure(Left("見つかりません（404）. URL を確かめてください"))
                 case s => IO.pure(Left(s"読めませんでした（${s.code}）"))
               }
-            }.timeout(60.seconds).handleError(e =>
-              Left(s"読めませんでした（${Option(e.getMessage).getOrElse(e.getClass.getSimpleName).take(200)}）")
-            )
+            }.timeout(60.seconds).handleError {
+              // 確かめた後に名前の向き先が変わった（つなぐときにも確かめている）
+              case r: Rejected => Left(CalendarImporter.rejected(r))
+              case e => Left(s"読めませんでした（${Option(e.getMessage).getOrElse(e.getClass.getSimpleName).take(200)}）")
+            }
         }
     }
 
@@ -169,5 +181,16 @@ final class CalendarImporter(http: Client[IO],
     val once = IO.realTimeInstant.flatMap(now => calendars.claimDue(now.minusSeconds(syncEvery.toSeconds), 20))
       .flatMap(_.traverse_(sync)).handleErrorWith(e => Log.report(ErrorCode.SubscriptionSyncFailed, e.toString, e))
     (IO.sleep(1.minute) *> (once *> IO.sleep(5.minutes)).foreverM)
+  }
+}
+
+object CalendarImporter {
+  val NotPublic = "社内のネットワークなど、外部に公開されていないアドレスは購読できません"
+
+  /** 宛先を断った理由の文言. */
+  def rejected(r: Rejected): String = r match {
+    case Rejected.Internal(_) => NotPublic
+    case Rejected.Unresolvable(_) => "ホスト名を解決できません"
+    case Rejected.InvalidUrl | Rejected.BadScheme => "URL が正しくありません"
   }
 }

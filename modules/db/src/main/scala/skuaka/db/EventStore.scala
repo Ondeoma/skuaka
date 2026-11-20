@@ -1,5 +1,6 @@
 package skuaka.db
 
+import sbirds.db.*
 import cats.effect.*
 import cats.syntax.all.*
 import doobie.*
@@ -103,13 +104,14 @@ final class EventStore(xa: Transactor[IO]) extends TxStore(xa) {
 
   private def rangeOf(r: EventRow): (Instant, Option[Instant]) = EventRow.range(r.span, r.zone, r.recurrence)
 
-  /** ゲストを入れ替える（残る人の返事はそのまま）. */
+  /** ゲストを入れ替える（残る人の返事はそのまま. 存在しないユーザーの ID は入れない. 1文でまとめて入れる）. */
   private def setAttendees(id: UUID, users: List[UUID]): ConnectionIO[Unit] = {
-    val us = users.distinct
-    sql"delete from event_attendee where event_id = $id and not (user_id = any(${us.toArray}))".update.run *>
-      us.traverse_(u =>
-        sql"insert into event_attendee (event_id, user_id) values ($id, $u) on conflict do nothing".update.run
-      )
+    val us = users.distinct.toArray
+    sql"delete from event_attendee where event_id = $id and not (user_id = any($us))".update.run *>
+      (if us.isEmpty then ().pure[ConnectionIO]
+       else
+         sql"""insert into event_attendee (event_id, user_id)
+               select $id, u.id from app_user u where u.id = any($us) on conflict do nothing""".update.run.void)
   }
 
   def create(r: EventRow, attendees: List[UUID]): IO[Unit] = tx(createC(r, attendees))

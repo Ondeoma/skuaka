@@ -2,6 +2,7 @@ package skuaka.api
 
 import cats.effect.*
 import org.http4s.*
+import sbirds.http.RateLimitConfig
 import skuaka.db.*
 import skuaka.shared.*
 
@@ -18,11 +19,8 @@ final case class ApiConfig(cookieSecure: Boolean,
                            oauthClients: List[OAuthClient] = Nil)
 
 /** 認可を求める兄弟のサービス（OAUTH_CLIENTS で登録する）. redirectUri は完全一致で照合する. scopes は許すスコープ（read・write）. */
-final case class OAuthClient(id: String,
-                             secret: String,
-                             redirectUri: String,
-                             name: String,
-                             scopes: List[String] = List(TokenScope.Read))
+type OAuthClient = sbirds.oauth.OAuthClient
+val OAuthClient = sbirds.oauth.OAuthClient
 
 /** サーバーで組み立てる HTML の文字の置き換え. */
 object Html {

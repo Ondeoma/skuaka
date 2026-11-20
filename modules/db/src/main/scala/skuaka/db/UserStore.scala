@@ -1,5 +1,6 @@
 package skuaka.db
 
+import sbirds.db.*
 import cats.effect.*
 import cats.syntax.all.*
 import doobie.*
@@ -113,11 +114,11 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa) {
     }
   )
 
-  /** セッションを消し、IdP のログアウトに渡す ID トークンを返す. */
   /** セッションの id_token（OIDC でログインしたとき）. */
   def sessionIdToken(hash: Array[Byte]): IO[Option[String]] =
     tx(sql"select id_token from session where token_hash = $hash".query[Option[String]].option.map(_.flatten))
 
+  /** セッションを消し、IdP のログアウトに渡す ID トークンを返す. */
   def deleteSession(hash: Array[Byte]): IO[Option[String]] =
     tx(sql"delete from session where token_hash = $hash returning id_token".query[Option[String]].option.map(_.flatten))
 

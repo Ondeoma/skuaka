@@ -1,21 +1,20 @@
 package skuaka.app
 
+import sbirds.db.*
 import cats.effect.*
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import doobie.implicits.*
-import fs2.io.file.Path
 import org.http4s.*
-import org.http4s.dsl.io.*
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
-import org.http4s.server.staticcontent.*
 import skuaka.api.*
 import sbirds.auth.{OidcClient, OidcConfig}
 import skuaka.db.*
 import sbirds.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, Telemetry}
 import sbirds.push.{PushService, PushStore}
-import sbirds.http.Errors
+import sbirds.http.{Errors, Health, SecurityHeaders, Spa}
+import sbirds.net.NetGuard
 import skuaka.core.ErrorCode
 
 import scala.concurrent.duration.*
@@ -77,15 +76,11 @@ object Main extends IOApp.Simple {
         pushStore = new PushStore(xa)
         push <- Resource.eval(PushService.create(pushStore, http, cfg.api.publicUrl, "skuaka"))
         notifier = new EventNotifier(events, users, push)
-        // 外部のカレンダー（iCalendar の URL）の購読を定期的に読み直す
-        importer = new CalendarImporter(
-          http,
-          calendars,
-          events,
-          users,
-          if cfg.icsAllowPrivate then UrlGuard.allowAll else UrlGuard.publicOnly,
-          cfg.icsSyncMinutes.minutes
-        )
+        // 外部のカレンダー（iCalendar の URL）の購読を定期的に読み直す.
+        // 購読の URL は利用者が決めるので、確かめた IP にそのままつなぐクライアントで読む
+        icsPolicy = NetGuard.Policy.of(cfg.icsAllowPrivate)
+        icsHttp <- NetGuard.client(icsPolicy, timeout = 30.seconds).map(HttpClientTelemetry(_))
+        importer = new CalendarImporter(icsHttp, calendars, events, users, icsPolicy, cfg.icsSyncMinutes.minutes)
         _ <- importer.loop.background
         _ <- purgeLoop(users, events).background
         _ <- notifier.reminderLoop.background
@@ -103,9 +98,8 @@ object Main extends IOApp.Simple {
           Some(new OAuthStore(xa)),
           Some(importer)
         ) <+>
-          SecurityHeaders(
-            healthRoutes(xa) <+> RumRoutes.routes <+> web.getOrElse(HttpRoutes.empty[IO]),
-            cfg.api.cookieSecure
+          SecurityHeaders(ApiRoutes.headers(cfg.api))(
+            Health.routes(Database.ping(xa)) <+> RumRoutes.routes <+> web.getOrElse(HttpRoutes.empty[IO])
           )
         httpApp <- HttpTelemetry(
           Errors.handle(all.orNotFound, ErrorCode.Unexpected),
@@ -129,14 +123,6 @@ object Main extends IOApp.Simple {
         sbirds.observe.Log.report(ErrorCode.DatabaseNotReady, s"${e.getMessage.take(120)}; retry $attempt/60") *>
           IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
     }
-
-  private def healthRoutes(xa: doobie.Transactor[IO]): HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case GET -> Root / "healthz" =>
-      sql"select 1".query[Int].unique.transact(xa).timeout(3.seconds).attempt.map {
-        case Right(_) => TextResponse(Status.Ok, "ok")
-        case Left(_) => TextResponse(Status.ServiceUnavailable, "database unavailable")
-      }
-  }
 
   /** DB から定期的に読むメトリクス（skorimako のダッシュボード・アラート用）. */
   private def gauges(xa: doobie.Transactor[IO]): Resource[IO, Unit] = {
@@ -171,10 +157,9 @@ object Main extends IOApp.Simple {
 
   /** 期限の切れたセッション・ログイン途中の状態・古いリマインダーの送信の記録を消す（1時間ごと）. */
   private def purgeLoop(users: UserStore, events: EventStore): IO[Unit] =
-    (IO.sleep(1.minute) *>
-      ((IO.realTimeInstant.flatMap(users.purgeExpired) *> events.purgeReminders)
-        .handleErrorWith(e => sbirds.observe.Log.report(ErrorCode.PurgeFailed, e.toString, e)) *>
-        IO.sleep(1.hour)).foreverM).void
+    Periodic.run(1.minute, 1.hour, ErrorCode.PurgeFailed)(
+      IO.realTimeInstant.flatMap(users.purgeExpired) *> events.purgeReminders
+    ).void
 
   // IdP が http（開発環境など）のときは、そのアイコンの画像も許す（https の画像はもとから許している）
   private val idpImg: String = sys.env.get("OIDC_ISSUER").flatMap(u => scala.util.Try(java.net.URI.create(u)).toOption)
@@ -186,12 +171,10 @@ object Main extends IOApp.Simple {
    * 画像はアイコン（IdP の画像は外部の https）のため広めにする. Service Worker・manifest は自分のサイトなので default-src で足りる.
    */
   def spaCsp(indexHtml: String, rum: Option[String] = RumRoutes.origin): String = {
-    val inline = "(?s)<script>(.*?)</script>".r.findAllMatchIn(indexHtml).map(m =>
-      s"'sha256-${java.util.Base64.getEncoder.encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(m.group(1).getBytes("UTF-8")))}'"
-    )
+    val inline = Spa.inlineScriptHashes(indexHtml)
     (List(
       "default-src 'self'",
-      ("script-src 'self'" :: inline.toList ++ rum.toList).mkString(" "),
+      ("script-src 'self'" :: inline ++ rum.toList).mkString(" "),
       "style-src 'self' 'unsafe-inline'",
       s"img-src 'self' data: blob: https:$idpImg",
       ("connect-src 'self'" :: rum.toList).mkString(" "),
@@ -202,22 +185,15 @@ object Main extends IOApp.Simple {
     )).mkString("; ")
   }
 
-  /** ビルド済みの画面の配信. 存在しないパスは index.html（SPA）. */
+  /** ビルド済みの画面の配信（画面の CSP を付ける）. 存在しないパスは index.html（SPA）. */
   private def spa(dir: String): IO[HttpRoutes[IO]] =
-    IO.blocking(java.nio.file.Files.readString(java.nio.file.Path.of(dir, "index.html"))).map(spaRoutes(dir, _))
-
-  private def spaRoutes(dir: String, indexHtml: String): HttpRoutes[IO] = {
-    val csp = spaCsp(indexHtml)
-    val files = fileService[IO](FileService.Config(dir))
-    val index = HttpRoutes.of[IO] {
-      case req @ GET -> path
-          if !path.segments.headOption.map(_.decoded()).exists(Set("api", "auth", "ics", "mcp", "oauth", "healthz")) =>
-        StaticFile.fromPath(Path(dir) / "index.html", Some(req)).getOrElseF(Errors.respond(ErrorCode.PageNotFound))
+    Spa.indexHtml(dir).map { indexHtml =>
+      val csp = spaCsp(indexHtml)
+      Spa.routes(
+        dir,
+        Spa.firstSegment("api", "auth", "ics", "mcp", "oauth", "healthz"),
+        notFound = Errors.respond(ErrorCode.PageNotFound),
+        finish = (_, r) => r.putHeaders("Content-Security-Policy" -> csp)
+      )
     }
-    HttpRoutes[IO] { req =>
-      val cc =
-        if req.pathInfo.renderString.startsWith("/assets/") then "public, max-age=31536000, immutable" else "no-cache"
-      (files <+> index).run(req).map(_.putHeaders("Cache-Control" -> cc, "Content-Security-Policy" -> csp))
-    }
-  }
 }
