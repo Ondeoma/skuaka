@@ -31,8 +31,6 @@ case class State(drag: RV[Option[Drag]] = RV(None), now: RV[Double] = RV(js.Date
 
 def initState() = State()
 
-private var timer: Option[Int] = None
-
 def mounted(s: State): Unit = {
   // 最初は朝8時あたりを見せる（今日を含むなら今の時刻の少し前）
   dom.window.setTimeout(() => s.body.foreach { b =>
@@ -40,10 +38,9 @@ def mounted(s: State): Unit = {
     val m = if (dayList.contains(Cal.today())) math.max(0, nowMin - 120) else 8 * 60
     b.scrollTop = m / 60.0 * HourPx
   }, 0)
-  timer = Some(dom.window.setInterval(() => s.now := js.Date.now(), 60000))
+  useInterval(60000)(s.now := js.Date.now())
+  ()
 }
-
-def unmounted(): Unit = timer.foreach(dom.window.clearInterval)
 
 def dayList: List[String] = if (Store.view.v == "day") List(Store.date.v) else Store.weekDays(Store.date.v)
 

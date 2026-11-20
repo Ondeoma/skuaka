@@ -5,7 +5,6 @@ import skuaka.web.parts.*
 
 import org.scalajs.dom
 
-import scala.concurrent.{Future, Promise}
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 
@@ -33,9 +32,9 @@ def mounted(s: State): Unit = {
 }
 
 def save(s: State): Unit =
-  Store.report(Api.updateMe(UpdateMeReq(Some(s.name.v.trim), Some(s.tz.v)))) { me =>
+  Toasts.report(Api.updateMe(UpdateMeReq(Some(s.name.v.trim), Some(s.tz.v)))) { me =>
     Store.me := Some(me)
-    Store.toast("保存しました")
+    Toasts.show("保存しました")
   }
 
 // ---------------------------------------------------------------- Web 会議（skaka）
@@ -47,65 +46,38 @@ def connectUrl: String = Api.skakaConnectUrl("/settings")
 
 /** 許可の画面から戻ったときの結果（?integration=skaka&result=…）を知らせて、URL から消す. */
 def skakaResult(): Unit = {
-  val q = new dom.URLSearchParams(dom.window.location.search)
-  if (q.get("integration") == "skaka") {
-    q.get("result") match {
-      case "connected" => Store.toast(s"${AppNames.nameOf("skaka")}（Web 会議）と連携しました")
-      case "denied"    => Store.toast(s"${AppNames.nameOf("skaka")} で許可されませんでした", error = true)
-      case _           => Store.toast(s"${AppNames.nameOf("skaka")} と連携できませんでした。もう一度試してください", error = true)
+  if (Router.queryParam("integration").v.contains("skaka")) {
+    Router.queryParam("result").v.getOrElse("") match {
+      case "connected" => Toasts.show(s"${AppNames.nameOf("skaka")}（Web 会議）と連携しました")
+      case "denied"    => Toasts.show(s"${AppNames.nameOf("skaka")} で許可されませんでした", error = true)
+      case _           => Toasts.show(s"${AppNames.nameOf("skaka")} と連携できませんでした。もう一度試してください", error = true)
     }
-    dom.window.history.replaceState(null, "", dom.window.location.pathname)
+    Router.setQuery("integration" -> None, "result" -> None)
     Store.loadSkaka().failed.foreach(_ => ())
   }
 }
 
 def disconnectSkaka(): Unit =
   Dialog.confirm(s"${AppNames.nameOf("skaka")}（Web 会議）との連携をやめますか？（付けてある会議室の URL はそのまま残ります）", "やめる") {
-    Store.report(Api.disconnectSkaka())(_ => { Store.toast("連携をやめました"); Store.loadSkaka().failed.foreach(_ => ()) })
+    Toasts.report(Api.disconnectSkaka())(_ => { Toasts.show("連携をやめました"); Store.loadSkaka().failed.foreach(_ => ()) })
   }
 
 // ---------------------------------------------------------------- アイコン
 
-val AvatarPx = 256
-
-def meBrief = Store.me.mapC(_.map(_.brief))
+def meBrief = Store.me.mapC(_.map(_.brief.person))
 def uploaded = Store.me.mapC(_.exists(_.avatarUploaded))
-
-/** 画像の中央を正方形に切り抜き、256×256 にする（WebP. 対応していないブラウザでは PNG）. */
-def square(file: dom.File): Future[dom.Blob] = {
-  js.Dynamic.global.createImageBitmap(file).asInstanceOf[js.Promise[js.Dynamic]].toFuture.flatMap { img =>
-    val (w, h) = (img.width.asInstanceOf[Double], img.height.asInstanceOf[Double])
-    val side = math.min(w, h)
-    val canvas = dom.document.createElement("canvas").asInstanceOf[dom.HTMLCanvasElement]
-    canvas.width = AvatarPx; canvas.height = AvatarPx
-    val ctx = canvas.getContext("2d").asInstanceOf[js.Dynamic]
-    ctx.imageSmoothingQuality = "high"
-    ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, AvatarPx, AvatarPx)
-    val p = Promise[dom.Blob]()
-    canvas.asInstanceOf[js.Dynamic].toBlob((b: dom.Blob) =>
-      if (b == null) p.failure(new Exception("画像を作れませんでした")) else p.success(b), "image/webp", 0.9)
-    p.future
-  }
-}
 
 def avatarDone(me: MeDto, msg: String): Unit = {
   Store.me := Some(me)
-  Store.toast(msg)
-  Store.report(Store.loadCalendars())(_ => ()) // 共有の相手などに出る自分のアイコンも新しくする
+  Toasts.show(msg)
+  Toasts.report(Store.loadCalendars())(_ => ()) // 共有の相手などに出る自分のアイコンも新しくする
 }
 
-def pickAvatar(e: dom.Event): Unit = {
-  val input = e.target.asInstanceOf[dom.HTMLInputElement]
-  Option(input.files).filter(_.length > 0).map(_(0)).foreach { f =>
-    input.value = "" // 同じファイルを選び直せるように
-    if (!f.`type`.startsWith("image/")) Store.toast("画像のファイルを選んでください", error = true)
-    else Store.report(square(f).flatMap(Api.uploadAvatar))(me => avatarDone(me, "アイコンを保存しました"))
-  }
-}
+def pickAvatar(e: dom.Event): Unit = Images.pickAvatar(e)(Api.uploadAvatar)(me => avatarDone(me, "アイコンを保存しました"))
 
 def removeAvatar(): Unit =
   Dialog.confirm("保存したアイコンを消しますか？（ログインの仕組みから受け取った画像か、名前の1文字目の表示に戻ります）", "消す") {
-    Store.report(Api.deleteAvatar())(me => avatarDone(me, "アイコンを消しました"))
+    Toasts.report(Api.deleteAvatar())(me => avatarDone(me, "アイコンを消しました"))
   }
 
 def askPermission(s: State): Unit =
@@ -166,7 +138,7 @@ def zones: List[String] = Cal.timezones()
       <p class="small">プッシュ通知を受け取ると、画面を閉じていても予定の通知と招待が届きます。</p>
       <p><PushToggle /></p>
     </section>
-    <ApiTokenSettings />
+    <ApiTokenSettings mcpName="skuaka" curlPath="/api/events?from=2026-11-01&amp;to=2026-12-01" writeLabel="読み書き（予定の作成・変更・削除もできる）" about="予定を読み書きしたりできます。" tools="予定の一覧・検索・詳細・作成・変更・削除、招待への返事、空き時間の検索、カレンダーの一覧、任意の REST API の呼び出し。" :linksAbout='s"あなたが許可して、あなたの権限で予定を使っているサービス（AI エージェントの ${AppNames.nameOf("skakapo")} など）です。"' linkLost="このサービスはあなたの予定を読み書きできなくなります" />
     <section class="panel">
       <h2>キーボードの操作</h2>
       <table class="keys"><tr v-for="k in Keys.list"><td><kbd>{{ k._1 }}</kbd></td><td class="small">{{ k._2 }}</td></tr></table>

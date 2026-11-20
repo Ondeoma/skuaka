@@ -8,12 +8,12 @@ case class State(q: RV[String] = RV(""), results: RV[Option[List[OccurrenceDto]]
 
 def initState() = State()
 
-def query(): String = Option(new dom.URL(dom.window.location.href).searchParams.get("q")).getOrElse("")
+def query(): String = Router.queryParam("q").v.getOrElse("")
 
 def run(s: State): Unit = {
   s.q := query()
   s.results := None
-  if (s.q.v.trim.nonEmpty) Store.report(Api.search(s.q.v.trim))(rs => s.results := Some(rs))
+  if (s.q.v.trim.nonEmpty) Toasts.report(Api.search(s.q.v.trim))(rs => s.results := Some(rs))
   else s.results := Some(Nil)
 }
 

@@ -10,8 +10,6 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 import scala.util.{Failure, Success}
 
-final case class Toast(id: Int, text: String, error: Boolean)
-
 /** 編集中の予定（作成・変更の画面の入力）. occurrence は繰り返しのどの回を開いたか. */
 final case class Draft(id: Option[UUID],
                        occurrence: Option[String],
@@ -70,7 +68,6 @@ object Store {
   val calendars: RV[List[CalendarDto]] = RV(Nil)
   val occurrences: RV[List[OccurrenceDto]] = RV(Nil)
   val loading: RV[Boolean] = RV(false)
-  val toasts: RV[List[Toast]] = RV(Nil)
 
   /** 表示の種類（day / week / month / agenda）と、表示の基準の日. */
   val view: RV[String] = RV(Prefs.get("view", if (dom.window.innerWidth < 720) "day" else "week"))
@@ -92,33 +89,9 @@ object Store {
 
   val views: List[(String, String)] = List("day" -> "日", "week" -> "週", "month" -> "月", "agenda" -> "スケジュール")
 
-  // ---------------------------------------------------------------- トースト
-
-  private var toastSeq = 0
-
-  def toast(text: String, error: Boolean = false): Unit = {
-    toastSeq += 1
-    val t = Toast(toastSeq, text, error)
-    toasts := (toasts.v :+ t).takeRight(4)
-    dom.window.setTimeout(() => dismiss(t.id), if (error) 9000 else 5000)
-  }
-
-  def dismiss(id: Int): Unit = toasts := toasts.v.filterNot(_.id == id)
-
-  def error(e: Throwable): Unit = e match {
-    case ApiError(401, _) => ()
-    case other => toast(other.getMessage, error = true)
-  }
-
-  /** Future の失敗をトーストで知らせる. */
-  def report[A](f: Future[A])(ok: A => Unit): Unit = f.onComplete {
-    case Success(a) => ok(a)
-    case Failure(e) => error(e)
-  }
-
   /** 失敗したらトーストで知らせてから failed（先に画面を変えておく操作の取り消し）. */
   def orUndo[A](f: Future[A])(failed: => Unit): Unit = f.onComplete {
-    case Failure(e) => error(e); failed
+    case Failure(e) => Toasts.error(e); failed
     case _ => ()
   }
 
@@ -199,7 +172,7 @@ object Store {
         loading := false
         r match {
           case Success(os) => if (os != occurrences.v) occurrences := os
-          case Failure(e) => error(e)
+          case Failure(e) => Toasts.error(e)
         }
       }
     }
@@ -302,7 +275,7 @@ object Store {
              allDay: Boolean = false,
              endDate: Option[String] = None): Unit =
     if (guest.v.isEmpty) defaultCalendar match {
-      case None => toast("予定を入れられるカレンダーがありません", error = true)
+      case None => Toasts.show("予定を入れられるカレンダーがありません", error = true)
       case Some(c) =>
         val now = new js.Date()
         val s = if (startMin >= 0) startMin else math.min(23 * 60, (now.getHours().toInt + 1) * 60)
@@ -333,7 +306,7 @@ object Store {
     }
 
   /** 予定（の1回）の編集を始める. */
-  def edit(o: OccurrenceDto): Unit = report(Api.event(o.eventId)) { e =>
+  def edit(o: OccurrenceDto): Unit = Toasts.report(Api.event(o.eventId)) { e =>
     detail := None
     editor := Some(draftOf(e, o))
   }
@@ -383,17 +356,19 @@ object Store {
   /** 繰り返しの予定なら、どの範囲に適用するかを聞いてから f（verb は「変更」「削除」）. */
   def askScope(recurring: Boolean, verb: String, onCancel: () => Unit = () => ())(f: Option[String] => Unit): Unit =
     if (!recurring) f(None)
-    else Dialog.choose(
-      s"繰り返しの予定を${verb}します",
-      List(
-        EditScope.This -> "この予定",
-        EditScope.Following -> "これ以降のすべての予定",
-        EditScope.All -> "すべての予定"
-      ),
-      s"${verb}する",
-      danger = verb == "削除",
-      onCancel = onCancel
-    )(sc => f(Some(sc)))
+    else
+      Dialog.choose(
+        s"繰り返しの予定を${verb}します",
+        List(
+          EditScope.This -> "この予定",
+          EditScope.Following -> "これ以降のすべての予定",
+          EditScope.All -> "すべての予定"
+        ),
+        s"${verb}する",
+        danger = verb == "削除",
+        radio = true,
+        onCancel = onCancel
+      )(sc => f(Some(sc)))
 
   /** 予定を保存する. 「この予定」と「これ以降」は新しい予定になるので、version は送らない. */
   private def saveDraft(d: Draft, scope: Option[String]): Future[EventDto] = {
@@ -404,11 +379,11 @@ object Store {
   /** 編集中の予定を保存する. */
   def save(d: Draft)(done: => Unit): Unit =
     askScope(d.wasRecurring, "変更") { scope =>
-      report(saveDraft(d, scope)) { e =>
+      Toasts.report(saveDraft(d, scope)) { e =>
         editor := None
         // 会議室を作れなくても、予定は保存してある
-        e.meetingError.fold(toast(if (d.id.isEmpty) "予定を作成しました" else "予定を変更しました"))(m =>
-          toast(s"予定を保存しました。$m", error = true)
+        e.meetingError.fold(Toasts.show(if (d.id.isEmpty) "予定を作成しました" else "予定を変更しました"))(m =>
+          Toasts.show(s"予定を保存しました。$m", error = true)
         )
         done
         changed()
@@ -418,9 +393,9 @@ object Store {
   def remove(o: OccurrenceDto): Unit =
     askScope(o.recurring, "削除") { scope =>
       val go = () =>
-        report(Api.deleteEvent(o.eventId, scope.map(_ -> o.occurrence))) { _ =>
+        Toasts.report(Api.deleteEvent(o.eventId, scope.map(_ -> o.occurrence))) { _ =>
           detail := None; editor := None
-          toast("予定を削除しました")
+          Toasts.show("予定を削除しました")
           changed()
         }
       if (scope.isDefined) go() else Dialog.confirm(s"「${o.title}」を削除しますか？", "削除")(go())
@@ -429,7 +404,7 @@ object Store {
   /** ドラッグで動かした・伸ばした予定を保存する（新しい開始・終わり. 終日なら日付）. */
   def move(o: OccurrenceDto, start: String, end: String)(cancel: => Unit): Unit =
     Api.event(o.eventId).onComplete {
-      case Failure(e) => error(e); cancel
+      case Failure(e) => Toasts.error(e); cancel
       case Success(e) =>
         val d0 = draftOf(e, o)
         val d =
@@ -443,13 +418,13 @@ object Store {
         askScope(d.wasRecurring, "変更", () => cancel)(scope =>
           saveDraft(d, scope).onComplete {
             case Success(_) => changed()
-            case Failure(e) => error(e); cancel
+            case Failure(e) => Toasts.error(e); cancel
           }
         )
     }
 
   def rsvp(o: OccurrenceDto, response: String): Unit =
-    report(Api.rsvp(o.eventId, response)) { _ =>
+    Toasts.report(Api.rsvp(o.eventId, response)) { _ =>
       detail := detail.v.map(_.copy(myResponse = Some(response)))
       changed()
     }
@@ -459,14 +434,8 @@ object Store {
   /** 表示の期間が変わったら読み直し、ほかの人の変更も1分ごとに取りに行く. */
   def start(): Unit = {
     watch(computed((view.v, date.v, weekStart.v, weekends.v)))((_, _) => load())
-    dom.window.setInterval(
-      () => if (dom.document.visibilityState.toString == "visible" && editor.v.isEmpty) load(),
-      60000
-    )
-    dom.document.addEventListener(
-      "visibilitychange",
-      (_: dom.Event) => if (dom.document.visibilityState.toString == "visible") load()
-    )
+    // タブが表示されている間だけ. 戻ってきたときはすぐに読み直す（ログインの後に非同期で呼ぶので、コンポーネントには結び付かない）
+    useVisiblePolling(60000)(if (editor.v.isEmpty) load())
     reminders.start()
     Keys.install()
     loadSkaka().failed.foreach(_ => ())
@@ -495,7 +464,7 @@ object Store {
     private def notify(o: OccurrenceDto, minutes: Int): Unit = {
       val when = if (minutes == 0) "" else s"（${Reminders.label(minutes).stripSuffix("前")}後）"
       val text = s"${Cal.time(o.start)}$when ${o.title}" + (if (o.location.nonEmpty) s"（${o.location}）" else "")
-      toast("🔔 " + text)
+      Toasts.show("🔔 " + text)
       scala.util.Try {
         val n = js.Dynamic.global.Notification
         if (!js.isUndefined(n) && n.permission.asInstanceOf[String] == "granted")
@@ -513,26 +482,6 @@ object Store {
     }
   }
 }
-
-/** DOM の補助. */
-object Dom {
-  def value(e: dom.Event): String = e.target.asInstanceOf[js.Dynamic].value.asInstanceOf[String]
-  def checked(e: dom.Event): Boolean = e.target.asInstanceOf[dom.HTMLInputElement].checked
-
-  def copy(text: String, message: String = "コピーしました"): Unit = {
-    dom.window.navigator.clipboard.writeText(text)
-    Store.toast(message)
-  }
-}
-
-/** 画面内のダイアログ（ブラウザ標準の confirm・prompt の代わり）. 表示は parts/DialogHost.st. */
-final case class DialogReq(message: String,
-                           okLabel: String,
-                           danger: Boolean,
-                           input: Option[RV[String]],
-                           choices: List[(String, String)],
-                           onOk: String => Unit,
-                           onCancel: () => Unit)
 
 /** この端末だけの表示の設定（localStorage. 使えないときは既定値）. */
 object Prefs extends sbirds.web.LocalPrefs("skuaka")

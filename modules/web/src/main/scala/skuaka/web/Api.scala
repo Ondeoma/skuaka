@@ -1,7 +1,6 @@
 package skuaka.web
 
 import io.circe.*
-import io.circe.parser.parse
 import io.circe.syntax.*
 import org.scalajs.dom
 import skuaka.shared.*
@@ -9,62 +8,9 @@ import skuaka.shared.*
 import java.util.UUID
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-import scala.scalajs.js
 
-/** API の呼び出しのエラー. */
-final case class ApiError(status: Int, message: String) extends Exception(message)
-
-/** バックエンドの REST API. 401 はログインへ、エラーは {"error": ...} の文言にする. */
-object Api {
-
-  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] =
-    send(method, url, body.map(b => (b.noSpaces, "application/json")))
-
-  /** 本文（と Content-Type）を付けて送る. JSON 以外（画像など）もそのまま送れる. */
-  private def send(method: dom.HttpMethod,
-                   url: String,
-                   payload: Option[(dom.BodyInit, String)]): Future[Option[Json]] = {
-    val init = new dom.RequestInit {}
-    init.method = method
-    init.credentials = dom.RequestCredentials.`same-origin`
-    // 更新の要求には X-Skuaka を付ける（サーバーはこれのない更新を CSRF として断る）
-    val hs = js.Dictionary[String]("X-Skuaka" -> "1")
-    payload.foreach {
-      (b, ct) =>
-        hs("Content-Type") = ct
-        init.body = b
-    }
-    init.headers = hs
-    dom.fetch(url, init).toFuture.flatMap { res =>
-      if (res.status == 401) {
-        val back = dom.window.location.pathname + dom.window.location.search
-        if (!dom.window.location.pathname.startsWith("/login"))
-          dom.window.location.href = "/auth/login?returnTo=" + js.URIUtils.encodeURIComponent(back)
-        Future.failed(ApiError(401, "ログインしてください"))
-      } else if (!res.ok) {
-        res.text().toFuture.recover(_ => "").flatMap { t =>
-          val msg = parse(
-            t
-          ).toOption.flatMap(_.hcursor.get[String]("error").toOption).getOrElse(s"${res.status} ${res.statusText}")
-          Future.failed(ApiError(res.status, msg))
-        }
-      } else if (res.status == 204) Future.successful(None)
-      else res.text().toFuture.map(t => if (t.isEmpty) None else Some(parse(t).fold(throw _, identity)))
-    }
-  }
-
-  private def as[A: Decoder](j: Option[Json]): A =
-    j.getOrElse(Json.Null).as[A].fold(e => throw ApiError(0, e.getMessage), identity)
-
-  def get[A: Decoder](url: String): Future[A] = request(dom.HttpMethod.GET, url).map(as[A])
-  def post[A: Decoder](url: String, body: Json = Json.obj()): Future[A] =
-    request(dom.HttpMethod.POST, url, Some(body)).map(as[A])
-  def put[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PUT, url, Some(body)).map(as[A])
-  def patch[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PATCH, url, Some(body)).map(as[A])
-  def delete(url: String): Future[Unit] = request(dom.HttpMethod.DELETE, url).map(_ => ())
-  def delete(url: String, body: Json): Future[Unit] = request(dom.HttpMethod.DELETE, url, Some(body)).map(_ => ())
-
-  def enc(s: String): String = js.URIUtils.encodeURIComponent(s)
+/** バックエンドの REST API（共通部分は sbirds-lib の ApiBase. 更新の要求に付ける X-Skuaka は Main で Fetch.extraHeaders に入れる）. */
+object Api extends sbirds.web.ApiBase {
 
   // ---------------------------------------------------------------- 認証・自分
 
@@ -81,14 +27,8 @@ object Api {
 
   /** アイコンを保存する（画像そのものを送る）・消す. */
   def uploadAvatar(image: dom.Blob): Future[MeDto] =
-    send(dom.HttpMethod.PUT, "/api/me/avatar", Some((image, image.`type`))).map(as[MeDto])
-  def deleteAvatar(): Future[MeDto] = send(dom.HttpMethod.DELETE, "/api/me/avatar", None).map(as[MeDto])
-
-  // ---------------------------------------------------------------- API トークン
-
-  def tokens(): Future[List[ApiTokenDto]] = get[List[ApiTokenDto]]("/api/tokens")
-  def createToken(r: ApiTokenReq): Future[ApiTokenCreated] = post[ApiTokenCreated]("/api/tokens", r.asJson)
-  def revokeToken(id: UUID): Future[Unit] = delete(s"/api/tokens/$id")
+    putRaw[MeDto]("/api/me/avatar", image, Some(image.`type`))
+  def deleteAvatar(): Future[MeDto] = request(dom.HttpMethod.DELETE, "/api/me/avatar").map(as[MeDto])
 
   // ---------------------------------------------------------------- カレンダー
 
@@ -112,7 +52,7 @@ object Api {
 
   /** iCalendar のファイルを取り込む（ファイルはそのまま送る）. */
   def importIcs(id: UUID, file: dom.Blob): Future[ImportResultDto] =
-    send(dom.HttpMethod.POST, s"/api/calendars/$id/import", Some((file, "text/calendar"))).map(as[ImportResultDto])
+    postRaw[ImportResultDto](s"/api/calendars/$id/import", file, Some("text/calendar"))
 
   /** iCalendar の URL を購読する・今すぐ読み直す（購読をやめるのは deleteCalendar）. */
   def subscribe(r: SubscribeReq): Future[CalendarDto] = post[CalendarDto]("/api/calendars/subscribe", r.asJson)

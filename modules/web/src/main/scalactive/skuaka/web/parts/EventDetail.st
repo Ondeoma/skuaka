@@ -9,7 +9,7 @@ case class State(ev: RV[Option[EventDto]] = RV(None))
 
 def initState() = State()
 
-def mounted(s: State, props: Props): Unit = Store.report(Store.fetchEvent(props.occ.eventId))(e => s.ev := Some(e))
+def mounted(s: State, props: Props): Unit = Toasts.report(Store.fetchEvent(props.occ.eventId))(e => s.ev := Some(e))
 
 def o(props: Props): OccurrenceDto = props.occ
 
@@ -44,7 +44,7 @@ def close(): Unit = Store.detail := None
 
 def leave(props: Props): Unit =
   Dialog.confirm("この予定を自分のカレンダーから外しますか？（ゲストの一覧からも外れます）", "外す") {
-    Store.report(Api.leaveEvent(props.occ.eventId)) { _ => close(); Store.changed() }
+    Toasts.report(Api.leaveEvent(props.occ.eventId)) { _ => close(); Store.changed() }
   }
 </script>
 
@@ -72,7 +72,7 @@ def leave(props: Props): Unit =
       <div class="grow">
         <div>{{ guestSummary(s) }}</div>
         <div v-for="a in guests(s)" :key="a.user.id" class="guest">
-          <Avatar :user="Some(a.user)" :size="24" /><span class="grow">{{ a.user.name }}</span>
+          <Avatar :user="Some(a.user.person)" :size="24" /><span class="grow">{{ a.user.name }}</span>
           <span :class="markClass(a.response)" :title="Rsvp.label(a.response)">{{ mark(a.response) }}</span>
         </div>
       </div>

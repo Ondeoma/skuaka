@@ -16,6 +16,9 @@ object Main {
     ScalactiveConfig.defaultTitle = Some("skuaka")
     AppNames.init("skuaka")
     Theme.apply()
+    // お知らせは 5 秒（エラーは 9 秒）で消し、同時に 4 つまで出す
+    Toasts.duration = 5000
+    Toasts.max = 4
     // sbirds-lib の部品（Pwa・Observe）の要求にも CSRF 対策の X-Skuaka を付ける
     sbirds.web.Fetch.extraHeaders = Map("X-Skuaka" -> "1")
     // skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）

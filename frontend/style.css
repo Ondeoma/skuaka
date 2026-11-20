@@ -156,6 +156,7 @@ table.list tr.clickable:hover td { background: var(--hover); }
 @keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(.98) } to { opacity: 1; transform: none } }
 .modal h2 { margin-top: 0; }
 .modal .actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; }
+.dlg .msg { font-weight: 600; }
 
 .toasts { position: fixed; right: 1rem; bottom: 1rem; z-index: 2000; display: flex; flex-direction: column; gap: .5rem; max-width: min(380px, calc(100vw - 2rem)); }
 .toast { background: var(--fg); color: var(--bg); border-radius: 9px; padding: .6rem .9rem; box-shadow: var(--shadow); font-size: .88rem; display: flex; gap: .6rem; align-items: flex-start; animation: toast-in .2s ease-out; }

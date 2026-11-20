@@ -21,7 +21,7 @@ def initState(props: Props) = {
 
 // 予定あり・なしのみの人には共有の相手を見せない
 def mounted(s: State, props: Props): Unit =
-  if (cal(props).exists(c => CalRole.rank(c.role) >= CalRole.rank(CalRole.View))) Store.report(Api.members(props.calId))(ms => s.members := ms)
+  if (cal(props).exists(c => CalRole.rank(c.role) >= CalRole.rank(CalRole.View))) Toasts.report(Api.members(props.calId))(ms => s.members := ms)
 
 def current(props: Props) = Store.calendars.mapC(_.find(_.id == props.calId))
 def isOwner(props: Props) = current(props).mapC(_.exists(_.role == CalRole.Owner))
@@ -51,35 +51,35 @@ def syncNow(s: State, props: Props): Unit = if (!s.syncing.v) {
   s.syncing := true
   val f = Api.syncCalendar(props.calId)
   f.onComplete(_ => { s.syncing := false; reload() })
-  Store.report(f)(_ => Store.toast("読み直しました"))
+  Toasts.report(f)(_ => Toasts.show("読み直しました"))
 }
 def importFile(props: Props, e: org.scalajs.dom.Event): Unit = IcsFile.importFrom(e, props.calId)(())
 
 
-def reload(): Unit = Store.report(Store.loadCalendars())(_ => Store.load())
+def reload(): Unit = Toasts.report(Store.loadCalendars())(_ => Store.load())
 
 def save(s: State, props: Props): Unit =
-  Store.report(Api.updateCalendar(props.calId, CalendarReq(s.name.v.trim, s.color.v, s.desc.v, Some(s.access.v)))) { _ =>
-    Store.toast("カレンダーを保存しました"); reload()
+  Toasts.report(Api.updateCalendar(props.calId, CalendarReq(s.name.v.trim, s.color.v, s.desc.v, Some(s.access.v)))) { _ =>
+    Toasts.show("カレンダーを保存しました"); reload()
   }
 
-def setMyColor(props: Props, c: String): Unit = Store.report(Api.calendarPrefs(props.calId, CalendarPrefReq(Some(c), None)))(_ => reload())
+def setMyColor(props: Props, c: String): Unit = Toasts.report(Api.calendarPrefs(props.calId, CalendarPrefReq(Some(c), None)))(_ => reload())
 
 def setMember(s: State, props: Props, u: UserBrief, role: String)(done: => Unit): Unit =
-  Store.report(Api.setMember(props.calId, MemberReq(u.id.toString, role))) { ms => s.members := ms; done }
+  Toasts.report(Api.setMember(props.calId, MemberReq(u.id.toString, role))) { ms => s.members := ms; done }
 
-def share(s: State, props: Props, u: UserBrief): Unit = setMember(s, props, u, s.role.v)(Store.toast(s"${u.name} さんと共有しました"))
+def share(s: State, props: Props, u: UserBrief): Unit = setMember(s, props, u, s.role.v)(Toasts.show(s"${u.name} さんと共有しました"))
 def changeRole(s: State, props: Props, m: MemberDto, role: String): Unit = setMember(s, props, m.user, role)(())
-def unshare(s: State, props: Props, m: MemberDto): Unit = Store.report(Api.removeMember(props.calId, m.user.id))(_ => mounted(s, props))
+def unshare(s: State, props: Props, m: MemberDto): Unit = Toasts.report(Api.removeMember(props.calId, m.user.id))(_ => mounted(s, props))
 
 def exclude(s: State) = s.members.mapC(_.map(_.user.id))
 
 def setLink(props: Props, access: String, regenerate: Boolean = false): Unit =
-  Store.report(Api.setPublicLink(props.calId, PublicLinkReq(access, regenerate)))(_ => reload())
+  Toasts.report(Api.setPublicLink(props.calId, PublicLinkReq(access, regenerate)))(_ => reload())
 def publish(s: State, props: Props): Unit = setLink(props, s.linkAccess.v)
 def unpublish(props: Props): Unit =
   Dialog.confirm("公開リンクをやめますか？（リンクを知っている人も、iCalendar で購読している人も見られなくなります）", "やめる") {
-    Store.report(Api.stopPublicLink(props.calId))(_ => reload())
+    Toasts.report(Api.stopPublicLink(props.calId))(_ => reload())
   }
 def regenerate(props: Props): Unit =
   Dialog.confirm("公開リンクを作り直しますか？（今のリンクと iCalendar の URL は使えなくなります）", "作り直す")(setLink(props, linkAccess(props).v, regenerate = true))
@@ -92,7 +92,7 @@ def remove(props: Props): Unit = cal(props).foreach { c =>
     if (c.role == CalRole.Owner) (s"カレンダー「${c.name}」を削除しますか？\n予定もすべて削除され、元に戻せません。", "削除")
     else if (c.viaTeam) (s"カレンダー「${c.name}」を一覧から外しますか？（「他のカレンダー」の＋から追加し直せます）", "外す")
     else (s"カレンダー「${c.name}」を一覧から外しますか？（共有した人がもう一度共有すると戻ります）", "外す")
-  Dialog.confirm(msg, ok)(Store.report(Api.deleteCalendar(c.id)) { _ => close(); reload() })
+  Dialog.confirm(msg, ok)(Toasts.report(Api.deleteCalendar(c.id)) { _ => close(); reload() })
 }
 
 val roles: List[(String, String)] = List(CalRole.View -> CalRole.label(CalRole.View), CalRole.Edit -> CalRole.label(CalRole.Edit))
@@ -138,11 +138,11 @@ val linkAccesses: List[(String, String)] = List(CalRole.Busy, CalRole.View).map(
       <h3>共有</h3>
       <p class="muted small">共有した人は、サイドバーの「他のカレンダー」でこのカレンダーを見られます。</p>
       <div class="row add">
-        <div class="grow"><UserPicker :onPick="u => share(s, props, u)" :exclude="exclude(s).v" placeholder="共有する人を名前・メールアドレスで探す" /></div>
+        <div class="grow"><UserPicker :search="UserSearch.search" :hint="UserSearch.hint" :onPick="p => UserSearch(p).foreach(share(s, props, _))" :exclude="exclude(s).v.map(_.toString)" placeholder="共有する人を名前・メールアドレスで探す" /></div>
         <select v-model="s.role"><option v-for="r in roles" :value="r._1">{{ r._2 }}</option></select>
       </div>
       <div v-for="m in s.members" :key="m.user.id" class="member">
-        <Avatar :user="Some(m.user)" :size="28" />
+        <Avatar :user="Some(m.user.person)" :size="28" />
         <div class="grow"><div>{{ m.user.name }}</div><div class="muted small">{{ m.user.email.getOrElse("") }}</div></div>
         <span v-if='m.role == "owner"' class="muted small">所有者</span>
         <template v-else>
@@ -180,7 +180,7 @@ val linkAccesses: List[(String, String)] = List(CalRole.Busy, CalRole.View).map(
       </div>
       <h3 v-if="hasMembers(s)">共有している人</h3>
       <div v-for="m in s.members" :key="m.user.id" class="member">
-        <Avatar :user="Some(m.user)" :size="28" /><span class="grow">{{ m.user.name }}</span><span class="muted small">{{ CalRole.label(m.role) }}</span>
+        <Avatar :user="Some(m.user.person)" :size="28" /><span class="grow">{{ m.user.name }}</span><span class="muted small">{{ CalRole.label(m.role) }}</span>
       </div>
     </template>
     <div class="actions">

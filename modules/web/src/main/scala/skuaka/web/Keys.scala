@@ -7,6 +7,9 @@ import org.scalajs.dom
 object Keys {
   val help: RV[Boolean] = RV(false)
 
+  /** ヘッダーの検索欄（App.st の ref）. */
+  val search: ElementRef[dom.HTMLInputElement] = ElementRef()
+
   val list: List[(String, String)] = List(
     "t" -> "今日",
     "j / n" -> "次の期間",
@@ -23,8 +26,7 @@ object Keys {
   def install(): Unit = dom.document.addEventListener(
     "keydown",
     (e: dom.KeyboardEvent) => {
-      val tag = Option(e.target.asInstanceOf[dom.Element]).map(_.tagName.toLowerCase).getOrElse("")
-      val busy = Set("input", "textarea", "select").contains(tag) || e.ctrlKey || e.metaKey || e.altKey ||
+      val busy = Dom.isTyping(e) || e.ctrlKey || e.metaKey || e.altKey ||
         Store.editor.v.isDefined || Store.detail.v.isDefined || Store.calSettings.v.isDefined || Store.teamPicker.v ||
         Store.addCalendar.v || Dialog.current.v.isDefined
       if (!busy && dom.window.location.pathname == Store.home) {
@@ -38,8 +40,7 @@ object Keys {
           case "a" => Store.setView("agenda"); true
           case "c" => Store.create(Store.date.v); true
           case "/" =>
-            Option(dom.document.querySelector("header .search input")).foreach(_.asInstanceOf[dom.HTMLElement].focus());
-            true
+            search.foreach(_.focus()); true
           case "?" => help := !help.v; true
           case _ => false
         }

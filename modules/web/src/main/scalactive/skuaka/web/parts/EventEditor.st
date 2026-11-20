@@ -167,10 +167,10 @@ def draft(s: State, props: Props): Draft = props.draft.copy(
 
 def save(s: State, props: Props): Unit = {
   val d = draft(s, props)
-  if (d.startDate.isEmpty || d.endDate.isEmpty) Store.toast("日付を入れてください", error = true)
+  if (d.startDate.isEmpty || d.endDate.isEmpty) Toasts.show("日付を入れてください", error = true)
   else if (!d.allDay && Cal.diffDays(d.startDate, d.endDate) * 1440 + Cal.parseHm(d.endTime) <= Cal.parseHm(d.startTime))
-    Store.toast("終わりは開始より後にしてください", error = true)
-  else if (d.allDay && d.endDate < d.startDate) Store.toast("終わりの日は開始の日より後にしてください", error = true)
+    Toasts.show("終わりは開始より後にしてください", error = true)
+  else if (d.allDay && d.endDate < d.startDate) Toasts.show("終わりの日は開始の日より後にしてください", error = true)
   else Store.save(d)(())
 }
 
@@ -193,7 +193,7 @@ def close(): Unit = Store.editor := None
         <h2 class="grow">{{ heading(props) }}</h2>
         <button type="button" class="ghost" @click="close()">×</button>
       </div>
-      <input type="text" class="title" v-model="s.title" placeholder="タイトルを追加" autofocus>
+      <input type="text" class="title" v-model="s.title" placeholder="タイトルを追加" v-focus>
       <div class="when">
         <div class="row">
           <input type="date" v-model="s.startDate" required>
@@ -281,9 +281,9 @@ def close(): Unit = Store.editor := None
             <ColorSwatches :value="s.color.v" :onPick="c => s.color := c" :auto="Some(calColor(s).v)" label="カレンダーの色" />
           </div>
           <div class="field"><span>ゲスト</span>
-            <UserPicker :onPick="u => addGuest(s, u)" :exclude="exclude(s).v" />
+            <UserPicker :search="UserSearch.search" :hint="UserSearch.hint" :onPick="p => UserSearch(p).foreach(addGuest(s, _))" :exclude="exclude(s).v.map(_.toString)" />
             <div v-for="u in s.attendees" :key="u.id" class="guest">
-              <Avatar :user="Some(u)" :size="24" /><span class="grow">{{ u.name }}</span>
+              <Avatar :user="Some(u.person)" :size="24" /><span class="grow">{{ u.name }}</span>
               <button type="button" class="ghost small" title="外す" @click="removeGuest(s, u)">×</button>
             </div>
           </div>

@@ -27,15 +27,15 @@ def mounted(s: State): Unit = {
   val path = dom.window.location.pathname
   if (path.startsWith("/login")) s.ready := true
   // 公開リンク（ログインしない人）: そのカレンダーを閲覧だけ
-  else if (path.startsWith("/p/")) Store.report(Store.openGuest(js.URIUtils.decodeURIComponent(path.stripPrefix("/p/")))) { _ =>
+  else if (path.startsWith("/p/")) Toasts.report(Store.openGuest(js.URIUtils.decodeURIComponent(path.stripPrefix("/p/")))) { _ =>
     Store.load()
     s.ready := true
   }
-  else Store.report(Api.me()) { me =>
+  else Toasts.report(Api.me()) { me =>
     Store.me := Some(me)
     AppNames.set(me.appNames)
     Observe.setUser(me.id.toString)
-    Store.report(Store.loadCalendars()) { _ =>
+    Toasts.report(Store.loadCalendars()) { _ =>
       Store.start()
       Store.load()
       s.ready := true
@@ -45,7 +45,7 @@ def mounted(s: State): Unit = {
 
 def search(s: State): Unit = if (s.q.v.trim.nonEmpty) Router.go("/search?q=" + Api.enc(s.q.v.trim))
 
-def logout(): Unit = Store.report(Api.logout())(url => dom.window.location.href = url)
+def logout(): Unit = Toasts.report(Api.logout())(url => dom.window.location.href = url)
 
 def onCalendar = Router.href.mapC(h => new dom.URL(h).pathname == "/")
 def loggedIn = Store.me.mapC(_.isDefined)
@@ -54,7 +54,7 @@ def browsing = computed(Store.me.v.isDefined || Store.guest.v.isDefined)
 def guestText = Store.guest.mapC(_.map((_, c) => s"${c.owner.name} さんの「${c.name}」（${TeamAccess.label(c.access)}・閲覧のみ）").getOrElse(""))
 def isGuest = Store.guest.mapC(_.isDefined)
 def homeLink = computed(Store.home)
-def meBrief = Store.me.mapC(_.map(_.brief))
+def meBrief = Store.me.mapC(_.map(_.brief.person))
 def userName = Store.me.mapC(_.map(_.name).getOrElse(""))
 def userEmail = Store.me.mapC(_.flatMap(_.email).getOrElse(""))
 def showSide = computed { Store.sidebar.v && Store.me.v.isDefined }
@@ -78,7 +78,7 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
     </template>
     <div class="spacer"></div>
     <form v-if="loggedIn" class="search hide-sp" @submit.prevent="search(s)">
-      <input type="search" v-model="s.q" placeholder="予定を検索（/）">
+      <input ref="Keys.search" type="search" v-model="s.q" placeholder="予定を検索（/）">
     </form>
     <span v-if="isGuest" class="guest muted small hide-sp">{{ guestText }}</span>
     <div v-if="browsing" class="segs hide-sp">
@@ -87,9 +87,8 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
     <select v-if="browsing" class="only-sp viewsel" :value="Store.view" @change="setView(Dom.value(event))">
       <option v-for="v in Store.views" :value="v._1">{{ v._2 }}</option>
     </select>
-    <div v-if="loggedIn" class="me">
+    <div v-if="loggedIn" class="me" v-click-outside="s.menu := false">
       <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="30" /></button>
-      <div v-if="s.menu" class="menu-bg" @click="s.menu := false"></div>
       <div v-if="s.menu" class="menu" @click="s.menu := false">
         <div class="who"><b>{{ userName }}</b><span class="muted small">{{ userEmail }}</span></div>
         <RouterLink to="/settings">設定</RouterLink>
@@ -116,12 +115,7 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
     <div class="actions"><button class="primary" @click="Keys.help := false">閉じる</button></div>
   </Modal>
   <DialogHost />
-  <div class="toasts">
-    <div v-for="t in Store.toasts" :key="t.id" :class='if (t.error) "toast error" else "toast"'>
-      <span class="grow">{{ t.text }}</span>
-      <button @click="Store.dismiss(t.id)">×</button>
-    </div>
-  </div>
+  <ToastHost />
 </template>
 
 <style scoped>
@@ -142,7 +136,6 @@ def loadingClass = Store.loading.mapC(l => if (l) "progress on" else "progress")
 .me-btn { padding: .15rem; border-radius: 999px; }
 .menu { position: absolute; right: 0; top: 2.8rem; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
   min-width: 220px; padding: .3rem; display: flex; flex-direction: column; z-index: 200; }
-.menu-bg { position: fixed; inset: 0; z-index: 199; }
 .who { display: flex; flex-direction: column; padding: .5rem .7rem; border-bottom: 1px solid var(--line); margin-bottom: .3rem; }
 .progress { position: absolute; left: 0; bottom: -1px; height: 2px; width: 0; background: var(--accent); opacity: 0; transition: opacity .2s; }
 .progress.on { width: 100%; opacity: .7; animation: prog 1.2s ease-in-out infinite; }

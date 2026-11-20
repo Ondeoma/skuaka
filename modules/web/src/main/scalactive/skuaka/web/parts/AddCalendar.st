@@ -2,11 +2,9 @@
 import skuaka.web.*
 import skuaka.shared.*
 
-import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-
 // カレンダーを追加する: 新しいカレンダーを作る・iCalendar の URL を購読する・iCalendar のファイルを取り込む
 case class State(tab: RV[String] = RV("new"), name: RV[String] = RV(""), url: RV[String] = RV(""), urlName: RV[String] = RV(""),
-                 target: RV[String] = RV(""), busy: RV[Boolean] = RV(false))
+                 target: RV[String] = RV(""), act: ActionState = useAction())
 
 def initState() = State(target = RV(Store.writable.headOption.map(_.id.toString).getOrElse("")))
 
@@ -20,17 +18,16 @@ def nextColor(): String = Palette.colors((Store.calendars.v.size * 3) % Palette.
 def close(): Unit = Store.addCalendar := false
 
 /** 作ったカレンダーを一覧に入れ、設定を開く. */
-def opened(c: CalendarDto): Unit = Store.report(Store.loadCalendars()) { _ => Store.load(); close(); Store.calSettings := Some(c.id) }
+def opened(c: CalendarDto): Unit = Toasts.report(Store.loadCalendars()) { _ => Store.load(); close(); Store.calSettings := Some(c.id) }
 
 def create(s: State): Unit = if (s.name.v.trim.nonEmpty)
-  Store.report(Api.createCalendar(CalendarReq(s.name.v.trim, nextColor(), "")))(opened)
+  Toasts.report(Api.createCalendar(CalendarReq(s.name.v.trim, nextColor(), "")))(opened)
 
-def subscribe(s: State): Unit = if (s.url.v.trim.nonEmpty && !s.busy.v) {
-  s.busy := true
-  val f = Api.subscribe(SubscribeReq(s.url.v.trim, Some(s.urlName.v.trim).filter(_.nonEmpty), Some(nextColor())))
-  f.onComplete(_ => s.busy := false)
-  Store.report(f) { c => Store.toast(s"「${c.name}」を購読しました"); opened(c) }
-}
+def subscribe(s: State): Unit = if (s.url.v.trim.nonEmpty && !s.act.busy.v)
+  Toasts.report(s.act.run(Api.subscribe(SubscribeReq(s.url.v.trim, Some(s.urlName.v.trim).filter(_.nonEmpty), Some(nextColor()))))) { c =>
+    Toasts.show(s"「${c.name}」を購読しました")
+    opened(c)
+  }
 
 def pick(s: State, e: org.scalajs.dom.Event): Unit =
   scala.util.Try(java.util.UUID.fromString(s.target.v)).toOption.foreach(id => IcsFile.importFrom(e, id)(close()))
@@ -43,14 +40,14 @@ def pick(s: State, e: org.scalajs.dom.Event): Unit =
       <button v-for="t in tabs" :class="tabClass(s, t._1)" @click="s.tab := t._1">{{ t._2 }}</button>
     </div>
     <form v-if='s.tab.v == "new"' @submit.prevent="create(s)">
-      <label class="field"><span>名前</span><input type="text" v-model="s.name" maxlength="100" required autofocus></label>
+      <label class="field"><span>名前</span><input type="text" v-model="s.name" maxlength="100" required v-focus></label>
       <p><button type="submit" class="primary">作成</button></p>
     </form>
     <form v-if='s.tab.v == "url"' @submit.prevent="subscribe(s)">
       <p class="muted small">ほかのカレンダーの iCalendar（.ics）の URL を入れると、その予定を読み取りだけのカレンダーとして表示します。
         1時間ごとに読み直すので、元のカレンダーの変更も反映されます。</p>
       <label class="field"><span>iCalendar の URL</span>
-        <input type="url" v-model="s.url" placeholder="https://… または webcal://…" required autofocus></label>
+        <input type="url" v-model="s.url" placeholder="https://… または webcal://…" required v-focus></label>
       <label class="field"><span>名前（任意. 省くと元のカレンダーの名前）</span><input type="text" v-model="s.urlName" maxlength="100"></label>
       <details class="help small">
         <summary>URL の調べ方</summary>
@@ -61,7 +58,7 @@ def pick(s: State, e: org.scalajs.dom.Event): Unit =
         </ul>
         <p>非公開の URL を知っている人はだれでも予定を見られるので、ほかの人に教えないでください。</p>
       </details>
-      <p><button type="submit" class="primary" :disabled="s.busy.v">{{ if (s.busy.v) "読み込んでいます…" else "購読する" }}</button></p>
+      <p><button type="submit" class="primary" :disabled="s.act.busy.v">{{ if (s.act.busy.v) "読み込んでいます…" else "購読する" }}</button></p>
     </form>
     <div v-if='s.tab.v == "file"'>
       <p class="muted small">ほかのカレンダーから書き出した iCalendar（.ics）のファイルの予定を、{{ AppNames.self }} のカレンダーに写します（一度だけ. 写したあとは {{ AppNames.self }} の予定として変更できます）。
