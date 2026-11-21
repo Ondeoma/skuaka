@@ -155,7 +155,7 @@ def attached(s: State) = s.location.mapC(Store.meetingUrl(_).isDefined)
 /** 付けられる（連携していて、まだ付けていない）. */
 def canAttach(s: State) = computed(Store.skaka.v.exists(_.connected) && Store.meetingUrl(s.location.v).isEmpty)
 def needConnect(s: State) = computed(Store.skaka.v.exists(!_.connected) && Store.meetingUrl(s.location.v).isEmpty)
-def connectUrl: String = Api.skakaConnectUrl("/settings")
+def connectUrl: String = Api.linkConnectUrl("skaka", "/settings")
 
 def heading(props: Props): String = if (props.draft.id.isEmpty) "予定を作成" else "予定を編集"
 

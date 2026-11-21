@@ -21,6 +21,7 @@ import sbirds.devidp.DevIdp
 import skuaka.shared.*
 
 import java.util.UUID
+import scala.concurrent.duration.*
 
 /**
  * OIDC のログインから予定の操作までを、開発用の IdP（DevIdp）と本物の DB（skuaka_test）で通しで確かめる.
@@ -92,6 +93,68 @@ class FlowSpec extends munit.CatsEffectSuite {
     }
   }
 
+  // ---------------------------------------------------------------- 偽の stui（チャット）と、Webhook の受け手
+
+  private val stuiUrl = "http://stui.test"
+
+  /** 偽の stui・Webhook の受け手が受けた要求（"notify {...}"・"hook /hooks/abc {...}"・"recv {ヘッダー} {...}" など）と、トークンが有効か. */
+  private val stuiCalls = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+  private val stuiValid = new java.util.concurrent.atomic.AtomicBoolean(true)
+
+  private val fakeStui: HttpRoutes[IO] = {
+    import org.http4s.dsl.io.*
+    val basicOk = (r: Request[IO]) =>
+      r.headers.get[org.http4s.headers.Authorization].exists(_.credentials ==
+        org.http4s.headers.Authorization(BasicCredentials("skuaka", "stui-test-secret-0123456789")).credentials)
+    val bearerOk = (r: Request[IO]) =>
+      stuiValid.get && r.headers.get[org.http4s.headers.Authorization].exists(_.credentials ==
+        Credentials.Token(AuthScheme.Bearer, "stui_test"))
+    HttpRoutes.of[IO] {
+      case r @ POST -> Root / "oauth" / "token" if basicOk(r) =>
+        r.as[UrlForm].flatMap(f =>
+          if f.getFirst("code").contains("good-code") then {
+            stuiValid.set(true); Ok(Json.obj("access_token" -> "stui_test".asJson, "token_type" -> "Bearer".asJson))
+          } else BadRequest()
+        )
+      case r @ POST -> Root / "oauth" / "revoke" if basicOk(r) => IO(stuiCalls.add("revoke")) *> Ok()
+      case r @ GET -> Root / "api" / "channels" =>
+        if !bearerOk(r) then IO.pure(Response[IO](Status.Unauthorized))
+        else
+          Ok(Json.arr(
+            Json.obj(
+              "id" -> "c1".asJson,
+              "name" -> "general".asJson,
+              "kind" -> "public".asJson,
+              "member" -> true.asJson
+            ),
+            Json.obj("id" -> "c2".asJson, "name" -> "old".asJson, "kind" -> "public".asJson, "archived" -> true.asJson),
+            Json.obj("id" -> "d1".asJson, "name" -> "dm".asJson, "kind" -> "dm".asJson)
+          ))
+      case r @ POST -> Root / "api" / "apps" / "notify" =>
+        if !bearerOk(r) then IO.pure(Response[IO](Status.Unauthorized))
+        else r.as[Json].flatMap(j => IO(stuiCalls.add(s"notify ${j.noSpaces}")) *> Created(Json.obj()))
+      case r @ POST -> Root / "hooks" / token =>
+        r.as[Json].flatMap(j => IO(stuiCalls.add(s"hook $token ${j.noSpaces}")) *> Ok())
+    }
+  }
+
+  private val fakeRecv: HttpRoutes[IO] = {
+    import org.http4s.dsl.io.*
+    HttpRoutes.of[IO] { case r @ POST -> Root / "recv" =>
+      r.bodyText.compile.string.flatMap { body =>
+        val h = (k: String) => r.headers.get(CIString(k)).fold("")(_.head.value)
+        IO(stuiCalls.add(s"recv ${h("X-Skuaka-Event")} ${h("X-Skuaka-Signature")} $body")) *> Ok()
+      }
+    }
+  }
+
+  /** 通知先の送り先（ホストで分ける）. */
+  private val hookHttp: Client[IO] = Client.fromHttpApp(HttpApp[IO](req =>
+    (if req.uri.host.exists(_.value == "hooks.test") then fakeRecv else fakeStui).orNotFound.run(req)
+  ))
+
+  @volatile private var hookService: HookService = null
+
   // ---------------------------------------------------------------- 偽の iCalendar の配信（購読のテスト）
 
   private val icsBody = new java.util.concurrent.atomic.AtomicReference[String]("")
@@ -124,12 +187,29 @@ class FlowSpec extends munit.CatsEffectSuite {
     } yield {
       val users = new UserStore(xa); val cals = new CalendarStore(xa, users); val events = new EventStore(xa)
       val sess = new SessionAuth(users, apiCfg)
-      val skaka = new SkakaService(
-        SkakaConfig(skakaUrl, skakaUrl, "skuaka", "skuaka-test-secret-0123456789"),
+      val tokens = new sbirds.links.IntegrationTokenStore(xa)
+      val box = skuaka.auth.SecretBox("test-app-secret-0123456789")
+      val skaka = new SkakaService(new sbirds.links.LinkClient(
+        sbirds.links.LinkConfig("skaka", skakaUrl, skakaUrl, "skuaka", "skuaka-test-secret-0123456789", "read write"),
         Client.fromHttpApp(fakeSkaka.orNotFound),
-        new IntegrationStore(xa),
-        skuaka.auth.SecretBox("test-app-secret-0123456789")
-      )
+        tokens,
+        box
+      ))
+      val stui = new sbirds.links.StuiClient(new sbirds.links.LinkClient(
+        sbirds.links.LinkConfig("stui", stuiUrl, stuiUrl, "skuaka", "stui-test-secret-0123456789", "read write"),
+        Client.fromHttpApp(fakeStui.orNotFound),
+        tokens,
+        box
+      ))
+      hookService =
+        new HookService(
+          new HookStore(xa),
+          Some(stui),
+          hookHttp,
+          NetGuard.Policy.allowAll,
+          apiCfg.publicUrl,
+          allowHttp = true
+        )
       val importer =
         new CalendarImporter(Client.fromHttpApp(fakeIcs.orNotFound), cals, events, users, NetGuard.Policy.allowAll)
       val app = ApiRoutes(
@@ -141,7 +221,9 @@ class FlowSpec extends munit.CatsEffectSuite {
         apiCfg,
         Some(skaka),
         oauth = Some(new OAuthStore(xa)),
-        importer = Some(importer)
+        importer = Some(importer),
+        stui = Some(stui),
+        hooks = Some(hookService)
       ).orNotFound
       (idp.routes.orNotFound, app, xa)
     }
@@ -886,14 +968,16 @@ class FlowSpec extends munit.CatsEffectSuite {
   }
 
   /** skaka との連携: 許可の画面へ移り、戻ってきたらトークンを保存する. */
-  private def connectSkaka(a: String): IO[Unit] =
+  private def connectSkaka(a: String): IO[Unit] = connect(a, "skaka", skakaUrl)
+
+  private def connect(a: String, p: String, url: String): IO[Unit] =
     for {
-      r1 <- call(a, Method.GET, "/api/integrations/skaka/connect?returnTo=/settings")
+      r1 <- call(a, Method.GET, s"/api/integrations/$p/connect?returnTo=/settings")
       _ = assertEquals(r1.status, Status.Found)
       auth = location(r1)
       _ = assertEquals(
         (
-          auth.renderString.startsWith(s"$skakaUrl/oauth/authorize?"),
+          auth.renderString.startsWith(s"$url/oauth/authorize?"),
           auth.params.get("client_id"),
           auth.params.get("scope"),
           auth.params.get("code_challenge_method"),
@@ -904,20 +988,20 @@ class FlowSpec extends munit.CatsEffectSuite {
           Some("skuaka"),
           Some("read write"),
           Some("S256"),
-          Some(s"${apiCfg.publicUrl}/api/integrations/skaka/callback")
+          Some(s"${apiCfg.publicUrl}/api/integrations/$p/callback")
         )
       )
       st = auth.params("state")
-      r2 <- call(a, Method.GET, s"/api/integrations/skaka/callback?code=good-code&state=$st")
-      _ = assertEquals(location(r2).renderString, "/settings?integration=skaka&result=connected")
+      r2 <- call(a, Method.GET, s"/api/integrations/$p/callback?code=good-code&state=$st")
+      _ = assertEquals(location(r2).renderString, s"/settings?integration=$p&result=connected")
       // 同じ state は2回使えない
-      r3 <- call(a, Method.GET, s"/api/integrations/skaka/callback?code=good-code&state=$st")
-      _ = assertEquals(location(r3).renderString, "/settings?integration=skaka&result=error")
+      r3 <- call(a, Method.GET, s"/api/integrations/$p/callback?code=good-code&state=$st")
+      _ = assertEquals(location(r3).renderString, s"/settings?integration=$p&result=error")
     } yield ()
 
   test("Web 会議（skaka）: 連携すると予定に会議室を付けられる. 題名・日時を変えると会議室にも伝える. 失効したら連携が切れる. やめると失効させる") {
     val (_, _, xa) = fixture()
-    def status(t: String) = call(t, Method.GET, "/api/integrations/skaka").flatMap(json[SkakaStatusDto])
+    def status(t: String) = call(t, Method.GET, "/api/integrations/skaka").flatMap(json[LinkStatusDto])
     def ev(cal: UUID, title: String, loc: String, meeting: Boolean) =
       EventReq(
         cal,
@@ -941,7 +1025,7 @@ class FlowSpec extends munit.CatsEffectSuite {
       cfgD <- call(a, Method.GET, "/api/client-config").flatMap(json[ClientConfigDto])
       _ = assertEquals(cfgD.skakaUrl, Some(skakaUrl))
       s0 <- status(a)
-      _ = assertEquals(s0, SkakaStatusDto(true, false, Some(skakaUrl)))
+      _ = assertEquals(s0, LinkStatusDto(true, false, Some(skakaUrl)))
       cal <- call(a, Method.GET, "/api/calendars").flatMap(json[List[CalendarDto]]).map(_.head)
       // 連携していなければ、予定は保存して理由を返す
       e0 <- call(a, Method.POST, "/api/events", Some(ev(cal.id, "未連携", "", true).asJson)).flatMap(json[EventDto])
@@ -1097,6 +1181,175 @@ class FlowSpec extends munit.CatsEffectSuite {
       )()
       _ = assertEquals(again.status, Status.BadRequest)
     } yield tok
+  }
+
+  test("stui: 連携してチャンネルを選び、予定の追加・変更・削除・テストを通知先（stui のチャンネル・受信 Webhook・Webhook）に送る. 権限と入力を確かめる") {
+    def calls = { val xs = stuiCalls.toArray.toList.map(_.toString); stuiCalls.clear(); xs }
+    // 予定の保存の後に裏で積むので、少し待ってから送信待ちを送る
+    def flush = IO.sleep(300.millis) *> hookService.store.process(50)(hookService.send).void
+    def ev(cal: UUID, title: String, version: Option[Int] = None) =
+      EventReq(
+        cal,
+        title,
+        "",
+        "会議室B",
+        false,
+        "2026-12-04T01:00:00Z",
+        "2026-12-04T02:00:00Z",
+        "Asia/Tokyo",
+        None,
+        None,
+        Nil,
+        Nil,
+        version
+      )
+    def hookReq(kind: String, url: String = "", events: List[String] = HookEvent.all, ch: Option[String] = None) =
+      Some(HookReq(kind, "", url, events, true, ch).asJson)
+    for {
+      a <- login("森 十二", "mori@stui.example.com")
+      b <- login("林 十三", "hayashi@stui.example.com")
+      s0 <- call(a, Method.GET, "/api/integrations/stui").flatMap(json[LinkStatusDto])
+      _ = assertEquals(s0, LinkStatusDto(true, false, Some(stuiUrl)))
+      cal <- call(a, Method.GET, "/api/calendars").flatMap(json[List[CalendarDto]]).map(_.head)
+      hooksPath = s"/api/calendars/${cal.id}/hooks"
+      // 連携していなければ、チャンネルを選べない
+      r0 <- call(a, Method.POST, hooksPath, hookReq(HookKind.Stui, ch = Some("c1")))
+      _ = assertEquals(r0.status, Status.BadRequest)
+      r0c <- call(a, Method.GET, "/api/integrations/stui/channels")
+      _ = assertEquals(r0c.status, Status.Conflict)
+      _ <- connect(a, "stui", stuiUrl)
+      chs <- call(a, Method.GET, "/api/integrations/stui/channels").flatMap(json[List[StuiChannelDto]])
+      _ = assertEquals(chs, List(StuiChannelDto("c1", "general", "public")))
+      // 参加していない（一覧にない）チャンネルは選べない
+      r1 <- call(a, Method.POST, hooksPath, hookReq(HookKind.Stui, ch = Some("c2")))
+      _ = assertEquals(r1.status, Status.BadRequest)
+      h1 <- call(a, Method.POST, hooksPath, hookReq(HookKind.Stui, ch = Some("c1"))).flatMap(json[List[HookDto]])
+      _ = assertEquals(
+        h1.map(h => (h.name, h.channelName, h.owner.map(_.name))),
+        List(("stui #general", Some("general"), Some("森 十二")))
+      )
+      h2 <- call(a, Method.POST, hooksPath, hookReq(HookKind.StuiHook, s"$stuiUrl/hooks/abc", List(HookEvent.Created)))
+        .flatMap(json[List[HookDto]])
+      // stui の受信 Webhook の URL は返さない
+      _ = assertEquals(h2.find(_.kind == HookKind.StuiHook).map(_.url), Some(""))
+      // 形の違う URL・https 以外・送るできごとなしは断る
+      bad <- List(
+        hookReq(HookKind.StuiHook, s"$stuiUrl/api/hooks"),
+        hookReq(HookKind.Url, "ftp://hooks.test/recv"),
+        hookReq(HookKind.Url, "http://hooks.test/recv", Nil),
+        hookReq("other", "http://hooks.test/recv")
+      ).traverse(b => call(a, Method.POST, hooksPath, b).map(_.status))
+      _ = assertEquals(bad, List.fill(4)(Status.BadRequest))
+      h3 <- call(
+        a,
+        Method.POST,
+        hooksPath,
+        hookReq(HookKind.Url, "http://hooks.test/recv", List(HookEvent.Created, HookEvent.Deleted))
+      )
+        .flatMap(json[List[HookDto]])
+      urlHook = h3.find(_.kind == HookKind.Url).get
+      _ = assert(urlHook.secret.length >= 24 && urlHook.url == "http://hooks.test/recv", urlHook)
+      // 閲覧だけの人は通知先を見られない. 変更の権限があれば見られる
+      _ <- call(
+        a,
+        Method.POST,
+        s"/api/calendars/${cal.id}/members",
+        Some(MemberReq("hayashi@stui.example.com", CalRole.View).asJson)
+      )
+      rb <- call(b, Method.GET, hooksPath)
+      _ = assertEquals(rb.status, Status.Forbidden)
+      rb2 <- call(b, Method.DELETE, s"/api/hooks/${urlHook.id}")
+      _ = assertEquals(rb2.status, Status.Forbidden)
+      _ <- call(
+        a,
+        Method.POST,
+        s"/api/calendars/${cal.id}/members",
+        Some(MemberReq("hayashi@stui.example.com", CalRole.Edit).asJson)
+      )
+      hb <- call(b, Method.GET, hooksPath).flatMap(json[List[HookDto]])
+      _ = assertEquals(hb.size, 3)
+      // 予定の追加: 3つとも送る
+      _ = calls
+      e1 <- call(a, Method.POST, "/api/events", Some(ev(cal.id, "週次定例").asJson)).flatMap(json[EventDto])
+      _ <- flush
+      c1 = calls
+      _ = assert(
+        c1.exists(c =>
+          c.startsWith("notify ") && c.contains(""""channel":"c1"""") && c.contains("🆕 週次定例") &&
+            c.contains(s"/?event=${e1.id}&date=2026-12-04") && c.contains("12月4日（金） 10:00〜11:00") &&
+            c.contains("📍 会議室B")
+        ),
+        c1
+      )
+      _ = assert(
+        c1.exists(c => c.startsWith("hook abc ") && c.contains("🆕 週次定例") && c.contains(""""username":"skuaka"""")),
+        c1
+      )
+      recv = c1.find(_.startsWith("recv ")).getOrElse(fail(c1.toString)).split(" ", 4)
+      _ = assertEquals(recv(1), HookEvent.Created)
+      body = io.circe.parser.parse(recv(3)).toOption.get
+      _ = assertEquals(recv(2), "sha256=" + sbirds.auth.Crypto.hmacHex(urlHook.secret, recv(3).getBytes("UTF-8")))
+      _ = assertEquals(
+        (
+          body.hcursor.get[String]("type"),
+          body.hcursor.downField("event").get[String]("title"),
+          body.hcursor.downField("calendar").get[String]("name"),
+          body.hcursor.downField("actor").get[String]("name")
+        ),
+        (Right(HookEvent.Created), Right("週次定例"), Right(cal.name), Right("森 十二"))
+      )
+      // 変更: stui のチャンネルだけ（受信 Webhook は追加だけ、Webhook は追加と削除だけを選んだ）
+      _ <- call(
+        a,
+        Method.PUT,
+        s"/api/events/${e1.id}",
+        Some(ev(cal.id, "週次定例（変更）", Some(e1.version)).asJson)
+      ).flatMap(json[EventDto])
+      _ <- flush
+      c2 = calls
+      _ = assert(c2.size == 1 && c2.head.contains("✏️ 週次定例（変更）") && c2.head.contains("森 十二 さんが"), c2)
+      // テストの送信は、その通知先だけ
+      rt <- call(a, Method.POST, s"/api/hooks/${urlHook.id}/test")
+      _ = assertEquals(rt.status, Status.Accepted)
+      _ <- flush
+      c3 = calls
+      _ = assert(c3.size == 1 && c3.head.startsWith(s"recv ${HookEvent.Ping} "), c3)
+      // 削除: stui のチャンネルと Webhook
+      _ <- call(a, Method.DELETE, s"/api/events/${e1.id}")
+      _ <- flush
+      c4 = calls
+      _ = assert(
+        c4.size == 2 && c4.exists(c => c.startsWith("notify ") && c.contains("🗑")) &&
+          c4.exists(_.startsWith(s"recv ${HookEvent.Deleted} ")),
+        c4
+      )
+      ds <- call(a, Method.GET, s"/api/hooks/${urlHook.id}/deliveries").flatMap(json[List[HookDeliveryDto]])
+      _ = assert(ds.size == 3 && ds.forall(_.done), ds)
+      // stui で失効したら、送り直さずに諦め、理由を残す. 設定した人の連携は外れる
+      _ = stuiValid.set(false)
+      e2 <- call(a, Method.POST, "/api/events", Some(ev(cal.id, "失効後").asJson)).flatMap(json[EventDto])
+      _ <- flush
+      hs <- call(a, Method.GET, hooksPath).flatMap(json[List[HookDto]])
+      last = hs.find(_.kind == HookKind.Stui).flatMap(_.last)
+      _ = assert(last.exists(d => d.failed && d.statusCode.contains(401) && d.error.exists(_.contains("連携"))), last)
+      s1 <- call(a, Method.GET, "/api/integrations/stui").flatMap(json[LinkStatusDto])
+      _ = assert(!s1.connected)
+      // 消す
+      rd <- call(a, Method.DELETE, s"/api/hooks/${urlHook.id}")
+      _ = assertEquals(rd.status, Status.NoContent)
+      _ = stuiValid.set(true)
+    } yield ()
+  }
+
+  test("個人の設定: stui の DM で受け取る通知（リマインダー・招待）を変えられる") {
+    for {
+      a <- login("森 十四", "mori14@stui.example.com")
+      m0 <- call(a, Method.GET, "/api/me").flatMap(json[MeDto])
+      _ = assertEquals((m0.chatReminders, m0.chatInvites), (true, true))
+      m1 <-
+        call(a, Method.PATCH, "/api/me", Some(UpdateMeReq(None, None, Some(false), None).asJson)).flatMap(json[MeDto])
+      _ = assertEquals((m1.chatReminders, m1.chatInvites, m1.name), (false, true, "森 十四"))
+    } yield ()
   }
 
   test("OAuth: 未ログインはログインへ 302. 知らない client・違う redirect_uri は 400. 許していないスコープは invalid_scope. PKCE は S256 だけ") {

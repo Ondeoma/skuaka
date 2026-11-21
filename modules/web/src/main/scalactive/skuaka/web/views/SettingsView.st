@@ -25,7 +25,7 @@ def permission(): String = scala.util.Try {
 
 def mounted(s: State): Unit = {
   pageTitle("設定")
-  skakaResult()
+  linkResult()
   watch(s.weekStart)((_, v) => { Store.weekStart := v.toIntOption.getOrElse(0); Prefs.set("weekStart", v) })
   watch(s.weekends)((_, v) => { Store.weekends := v; Prefs.set("weekends", v.toString) })
   watch(s.theme)((_, v) => Theme.set(v))
@@ -37,30 +37,43 @@ def save(s: State): Unit =
     Toasts.show("保存しました")
   }
 
-// ---------------------------------------------------------------- Web 会議（skaka）
+// ---------------------------------------------------------------- 兄弟のサービス（skaka: Web 会議・stui: チャット）との連携
 
 def hasSkaka = Store.skaka.mapC(_.isDefined)
 def skakaConnected = Store.skaka.mapC(_.exists(_.connected))
 def skakaUrl = Store.skaka.mapC(_.flatMap(_.url).getOrElse(""))
-def connectUrl: String = Api.skakaConnectUrl("/settings")
+def connectUrl: String = Api.linkConnectUrl("skaka", "/settings")
+
+def hasStui = Store.stui.mapC(_.isDefined)
+def stuiConnected = Store.stui.mapC(_.exists(_.connected))
+def stuiUrl = Store.stui.mapC(_.flatMap(_.url).getOrElse(""))
+def stuiConnectUrl: String = Api.linkConnectUrl("stui", "/settings")
+
+private val linkLabels = Map("skaka" -> "Web 会議", "stui" -> "チャット")
 
 /** 許可の画面から戻ったときの結果（?integration=skaka&result=…）を知らせて、URL から消す. */
-def skakaResult(): Unit = {
-  if (Router.queryParam("integration").v.contains("skaka")) {
+def linkResult(): Unit =
+  Router.queryParam("integration").v.filter(linkLabels.contains).foreach { p =>
     Router.queryParam("result").v.getOrElse("") match {
-      case "connected" => Toasts.show(s"${AppNames.nameOf("skaka")}（Web 会議）と連携しました")
-      case "denied"    => Toasts.show(s"${AppNames.nameOf("skaka")} で許可されませんでした", error = true)
-      case _           => Toasts.show(s"${AppNames.nameOf("skaka")} と連携できませんでした。もう一度試してください", error = true)
+      case "connected" => Toasts.show(s"${AppNames.nameOf(p)}（${linkLabels(p)}）と連携しました")
+      case "denied"    => Toasts.show(s"${AppNames.nameOf(p)} で許可されませんでした", error = true)
+      case _           => Toasts.show(s"${AppNames.nameOf(p)} と連携できませんでした。もう一度試してください", error = true)
     }
     Router.setQuery("integration" -> None, "result" -> None)
-    Store.loadSkaka().failed.foreach(_ => ())
+    Store.loadLink(p).failed.foreach(_ => ())
   }
-}
 
-def disconnectSkaka(): Unit =
-  Dialog.confirm(s"${AppNames.nameOf("skaka")}（Web 会議）との連携をやめますか？（付けてある会議室の URL はそのまま残ります）", "やめる") {
-    Toasts.report(Api.disconnectSkaka())(_ => { Toasts.show("連携をやめました"); Store.loadSkaka().failed.foreach(_ => ()) })
+def disconnect(p: String, note: String): Unit =
+  Dialog.confirm(s"${AppNames.nameOf(p)}（${linkLabels(p)}）との連携をやめますか？（$note）", "やめる") {
+    Toasts.report(Api.disconnectLink(p))(_ => { Toasts.show("連携をやめました"); Store.loadLink(p).failed.foreach(_ => ()) })
   }
+def disconnectSkaka(): Unit = disconnect("skaka", "付けてある会議室の URL はそのまま残ります")
+def disconnectStui(): Unit = disconnect("stui", "DM は届かなくなります。あなたが設定したカレンダーの通知先（stui のチャンネル）にも投稿できなくなります")
+
+def chatReminders = Store.me.mapC(_.exists(_.chatReminders))
+def chatInvites = Store.me.mapC(_.exists(_.chatInvites))
+def setChat(reminders: Option[Boolean], invites: Option[Boolean]): Unit =
+  Toasts.report(Api.updateMe(UpdateMeReq(None, None, reminders, invites)))(me => Store.me := Some(me))
 
 // ---------------------------------------------------------------- アイコン
 
@@ -121,6 +134,18 @@ def zones: List[String] = Cal.timezones()
         <button class="danger" @click="disconnectSkaka()">連携をやめる</button>
       </template>
       <a v-else class="btn primary" :href="connectUrl">{{ AppNames.of("skaka") }}（Web 会議）と連携する</a>
+    </section>
+    <section v-if="hasStui" class="panel">
+      <h2>チャット（{{ AppNames.of("stui") }}）</h2>
+      <p class="small">{{ AppNames.of("stui") }} と連携すると、予定のリマインダーと招待が {{ AppNames.of("stui") }} のボット「{{ AppNames.selfName }}」からの DM でも届きます。
+        カレンダーの設定の「通知先」で、{{ AppNames.of("stui") }} のチャンネルに予定を流すこともできます。</p>
+      <template v-if="stuiConnected">
+        <p class="small">✓ 連携しています（<a :href="stuiUrl.v" target="_blank" rel="noopener">{{ stuiUrl }}</a>）</p>
+        <label class="row"><input type="checkbox" :checked="chatReminders.v" @change="setChat(Some(Dom.checked(event)), None)"> リマインダーを DM で受け取る</label>
+        <label class="row"><input type="checkbox" :checked="chatInvites.v" @change="setChat(None, Some(Dom.checked(event)))"> 招待を DM で受け取る</label>
+        <p><button class="danger" @click="disconnectStui()">連携をやめる</button></p>
+      </template>
+      <a v-else class="btn primary" :href="stuiConnectUrl">{{ AppNames.of("stui") }}（チャット）と連携する</a>
     </section>
     <section class="panel">
       <h2>表示（この端末）</h2>

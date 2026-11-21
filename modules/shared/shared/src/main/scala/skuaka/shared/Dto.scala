@@ -12,8 +12,8 @@ import java.util.UUID
 final case class ClientConfigDto(devLogin: Boolean, oidc: Boolean, version: String, skakaUrl: Option[String])
   derives Encoder.AsObject, Decoder
 
-/** 自分が skaka（Web 会議）と連携しているか. */
-final case class SkakaStatusDto(enabled: Boolean, connected: Boolean, url: Option[String]) derives Encoder.AsObject,
+/** 兄弟のサービス（skaka・stui）と連携しているか. enabled はサーバーで設定されているか、url は相手の画面の URL. */
+final case class LinkStatusDto(enabled: Boolean, connected: Boolean, url: Option[String]) derives Encoder.AsObject,
     Decoder
 
 /**
@@ -42,7 +42,10 @@ final case class MeDto(
   timezone: String,
   avatarUploaded: Boolean,
   /** sbirds のアプリの表示名（slug → 名前. sruru の ID トークンから. 自身は "_self"） */
-  appNames: Map[String, String] = Map.empty)
+  appNames: Map[String, String] = Map.empty,
+  /** stui と連携しているとき、リマインダー・招待を stui の DM でも受け取るか */
+  chatReminders: Boolean = true,
+  chatInvites: Boolean = true)
   derives Encoder.AsObject, Decoder {
   def brief: UserBrief = UserBrief(id, name, email, avatarUrl)
 }
@@ -63,7 +66,10 @@ object AvatarImage {
   }
 }
 
-final case class UpdateMeReq(name: Option[String], timezone: Option[String]) derives Encoder.AsObject, Decoder
+final case class UpdateMeReq(name: Option[String],
+                             timezone: Option[String],
+                             chatReminders: Option[Boolean] = None,
+                             chatInvites: Option[Boolean] = None) derives Encoder.AsObject, Decoder
 
 /** カレンダー・予定の色の候補（値 → 名前）. 新しいカレンダーは Default. */
 object Palette {
@@ -346,3 +352,89 @@ final case class ApiTokenReq(name: String, scope: String, expiresInDays: Option[
 
 /** 作ったときだけ token（秘密の値）を返す. */
 final case class ApiTokenCreated(info: ApiTokenDto, token: String) derives Encoder.AsObject, Decoder
+
+// ---------------------------------------------------------------- カレンダーの通知先（stui・Webhook）
+
+/** 通知先の種類. */
+object HookKind {
+
+  /** stui のチャンネル（設定した人の stui との連携で、ボット「skuaka」として投稿する）. */
+  val Stui = "stui"
+
+  /** stui の受信 Webhook の URL. */
+  val StuiHook = "stui_hook"
+
+  /** 任意の URL に、署名付きの JSON を送る. */
+  val Url = "url"
+
+  val all: List[String] = List(Stui, StuiHook, Url)
+
+  def label(k: String): String = k match {
+    case Stui => "stui のチャンネル"
+    case StuiHook => "stui の受信 Webhook"
+    case _ => "Webhook"
+  }
+}
+
+/** 通知先に送るできごと（Webhook の本文の type と X-Skuaka-Event）. */
+object HookEvent {
+  val Reminder = "event.reminder"
+  val Created = "event.created"
+  val Updated = "event.updated"
+  val Deleted = "event.deleted"
+
+  /** 「テストを送る」. */
+  val Ping = "ping"
+
+  val all: List[String] = List(Reminder, Created, Updated, Deleted)
+
+  def label(e: String): String = e match {
+    case Reminder => "リマインダー（予定の通知の時刻）"
+    case Created => "予定の追加"
+    case Updated => "予定の変更"
+    case Deleted => "予定の削除"
+    case Ping => "テスト"
+    case other => other
+  }
+}
+
+/**
+ * カレンダーの通知先. url・secret は kind が url のときだけ返す（stui の受信 Webhook の URL は秘密の値なので返さない）.
+ * owner は stui のチャンネルに投稿するときに連携を使う人. last は最後の送信.
+ */
+final case class HookDto(id: UUID,
+                         kind: String,
+                         name: String,
+                         url: String,
+                         secret: String,
+                         events: List[String],
+                         enabled: Boolean,
+                         channelId: Option[String],
+                         channelName: Option[String],
+                         owner: Option[UserBrief],
+                         last: Option[HookDeliveryDto])
+  derives Encoder.AsObject, Decoder
+
+/** 通知先を作る・変える. url は stui_hook・url のとき（変えるときに空なら今の URL のまま）. channelId・channelName は stui のとき. */
+final case class HookReq(kind: String,
+                         name: String,
+                         url: String,
+                         events: List[String],
+                         enabled: Boolean,
+                         channelId: Option[String] = None,
+                         channelName: Option[String] = None)
+  derives Encoder.AsObject, Decoder
+
+/** 送信の記録. at は積んだ時刻（UTC の ISO 8601）. error は失敗の理由、failed は諦めたか. */
+final case class HookDeliveryDto(id: UUID,
+                                 event: String,
+                                 at: String,
+                                 done: Boolean,
+                                 failed: Boolean,
+                                 attempts: Int,
+                                 statusCode: Option[Int],
+                                 error: Option[String])
+  derives Encoder.AsObject, Decoder
+
+/** 投稿先に選べる stui のチャンネル（自分が参加しているもの）. */
+final case class StuiChannelDto(id: String, name: String, kind: String) derives Encoder.AsObject, Decoder

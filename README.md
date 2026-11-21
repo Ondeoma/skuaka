@@ -27,6 +27,10 @@ skuaka は、チームで予定を管理・共有するためのカレンダー�
   - 繰り返し（RRULE）・除外した回・一部の回の変更・終日・タイムゾーンも読む。skuaka で表せない繰り返し（年の何日目・第何週・1日に何回など）は近似する。通知とゲストは取り込まない
 - **Web 会議（skaka）**: 設定の画面で skaka と連携すると（OAuth 2.0 の認可コード + PKCE）、予定の編集画面で「Web 会議（skaka）を付ける」を選べる。
   保存すると skaka に会議室を作り、場所に会議室の URL を入れる（予定の詳細に「Web 会議に参加」）。題名・日時を変えると会議室にも伝える
+- **チャット（stui）**: 設定の画面で stui と連携すると、予定のリマインダーと招待が stui のボット「skuaka」からの DM でも届く（種類ごとに止められる）
+- **通知先**: カレンダーの設定で、予定のリマインダー・追加・変更・削除を送る先を足せる（所有者と変更の権限がある人）。
+  stui のチャンネル（自分の連携で、参加しているチャンネルを選ぶ）・stui の受信 Webhook の URL・Webhook（任意の URL に署名付きの JSON）。
+  送れなければ間を空けて送り直し、最後の送信の結果と最近の記録を見られる。「テストを送る」で確かめられる
 - **検索**（タイトル・場所・説明）、キーボードの操作（`t` 今日・`j`/`k` 前後・`d`/`w`/`m`/`a` 表示・`c` 作成・`/` 検索・`?` 一覧）
 - **API トークン**: 設定の画面で作成・失効（読み書き / 参照のみ、有効期限）。`Authorization: Bearer skuaka_…` で画面と同じ REST API を呼べる
   （一覧は `GET /api/endpoints`）
@@ -102,10 +106,14 @@ Docker: `scripts/dist.sh` のあと `docker build -f deploy/docker/app.Dockerfil
 | `RATE_LIMIT_AUTH` / `RATE_LIMIT_PUBLIC` | IP ごとの1分あたりの回数の上限。ログインと OAuth の認可の画面（`/auth/…`・`/oauth/authorize`、既定 20）と、OAuth のトークンの発行・失効（`/oauth/token`・`/oauth/revoke`）・公開リンク（`/api/public/…`・`/ics/…`）（既定 120）。0 で制限しない。超えたら 429 |
 | `TRUSTED_PROXIES` | リバースプロキシの IP か CIDR（カンマ区切り）。そこから来た要求だけ `X-Forwarded-For` から利用者の IP を読む。未設定なら直接つないできた相手の IP で数える |
 | `STATIC_DIR` | ビルド済みの画面（`dist/static`） |
-| `APP_SECRET` | 秘密の値（連携のトークン）を暗号化する鍵（16文字以上. skaka と連携するときは必須） |
+| `APP_SECRET` | 秘密の値（連携のトークン）を暗号化する鍵（16文字以上. skaka・stui と連携するときは必須） |
 | `SKAKA_URL` / `SKAKA_CLIENT_ID` / `SKAKA_CLIENT_SECRET` | Web 会議（skaka）との連携（3つとも設定したときだけ）。skaka には Redirect URI `${PUBLIC_URL}/api/integrations/skaka/callback` を登録する |
 | `OAUTH_CLIENTS` | skuaka を使う兄弟のサービス（OAuth の認可コード + PKCE）。JSON の配列 `[{"id":"skakapo","secret":"…(16文字以上)","redirectUri":"https://…/api/connections/callback","name":"skakapo","scopes":["read","write"]}]`（`scopes` を省くと read だけ） |
 | `SKAKA_INTERNAL_URL` | サーバーから skaka を呼ぶ URL（省けば `SKAKA_URL`） |
+| `STUI_URL` / `STUI_CLIENT_ID` / `STUI_CLIENT_SECRET` | チャット（stui）との連携（3つとも設定したときだけ）。stui の `OAUTH_CLIENTS` に skuaka を登録する（`redirectUri` は `${PUBLIC_URL}/api/integrations/stui/callback`、`scopes` は `["read","write"]`） |
+| `STUI_INTERNAL_URL` | サーバーから stui を呼ぶ URL（省けば `STUI_URL`） |
+| `WEBHOOK_ALLOW_HTTP` | カレンダーの通知先（Webhook）に http:// の URL も許す（開発用） |
+| `WEBHOOK_ALLOW_INTERNAL` | 通知先に送ってよい内部のアドレス（CIDR・IP・ホスト名をカンマ区切り）。既定は空（外のアドレスだけ）。`STUI_URL`・`STUI_INTERNAL_URL` のホストは書かなくても許す |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` | ログ・メトリクス・トレースの送り先（skorimako の URL と `Authorization=Bearer sko_…`（ingest のキー））。未設定なら送らない。そのほか OpenTelemetry の標準の `OTEL_*` が使える |
 | `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
 | `SKORIMAKO_RUM_TOKEN` / `SKORIMAKO_RUM_URL` / `SKORIMAKO_RUM_SAMPLE_RATE` | 画面のブラウザの観測（skorimako の RUM）。トークンは skorimako の管理の画面で登録したアプリのもの。URL を省略すると `SKORIMAKO_URL` |

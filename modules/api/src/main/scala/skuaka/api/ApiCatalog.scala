@@ -5,7 +5,11 @@ object ApiCatalog {
   final case class Endpoint(method: String, path: String, description: String)
   val all: List[Endpoint] = List(
     Endpoint("GET", "/api/me", "自分の情報（名前・メール・タイムゾーン）"),
-    Endpoint("PATCH", "/api/me", "自分の名前・タイムゾーンを変える {name?, timezone?}"),
+    Endpoint(
+      "PATCH",
+      "/api/me",
+      "自分の名前・タイムゾーン・stui の DM で受け取る通知を変える {name?, timezone?, chatReminders?, chatInvites?}"
+    ),
     Endpoint("PUT", "/api/me/avatar", "自分のアイコンを保存する（本文は画像そのもの. PNG・JPEG・GIF・WebP、1MB まで）"),
     Endpoint("DELETE", "/api/me/avatar", "保存したアイコンを消す（IdP の画像に戻る）"),
     Endpoint("GET", "/api/users?q=", "ユーザーを名前・メールで探す"),
@@ -40,6 +44,21 @@ object ApiCatalog {
       "/api/calendars/{calendarId}/import",
       "iCalendar のファイルの予定を取り込む（本文は iCalendar の文字列そのもの. Content-Type: text/calendar. 10MB まで. REST API だけ）。同じ UID の予定は上書きする"
     ),
+    Endpoint(
+      "GET",
+      "/api/calendars/{calendarId}/hooks",
+      "カレンダーの通知先（予定のリマインダー・追加・変更・削除を stui のチャンネル・stui の受信 Webhook・Webhook に送る. 所有者と変更の権限がある人）"
+    ),
+    Endpoint(
+      "POST",
+      "/api/calendars/{calendarId}/hooks",
+      "通知先を足す {kind: stui|stui_hook|url, name, url, events: [event.reminder|event.created|event.updated|event.deleted], enabled, channelId?}"
+    ),
+    Endpoint("PUT", "/api/hooks/{hookId}", "通知先を変える（本文は足すときと同じ. url が空なら今の URL のまま）"),
+    Endpoint("DELETE", "/api/hooks/{hookId}", "通知先を消す"),
+    Endpoint("POST", "/api/hooks/{hookId}/test", "通知先にテストの通知を送る"),
+    Endpoint("GET", "/api/hooks/{hookId}/deliveries", "通知先への最近の送信（結果・失敗の理由）"),
+    Endpoint("GET", "/api/integrations/stui/channels", "投稿先に選べる stui のチャンネル（stui と連携していること）"),
     Endpoint("GET", "/api/events?from=yyyy-MM-dd&to=yyyy-MM-dd&tz=", "期間の予定（繰り返しは1回ずつに展開。to は含まない。400日まで）"),
     Endpoint("GET", "/api/events/search?q=", "予定を探す（タイトル・場所・説明）"),
     Endpoint("GET", "/api/events/{eventId}", "予定の詳細（繰り返しの定義・ゲスト・version）"),

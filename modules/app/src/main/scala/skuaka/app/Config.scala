@@ -5,6 +5,8 @@ import sbirds.db.*
 import cats.effect.*
 import skuaka.api.*
 import sbirds.auth.OidcConfig
+import sbirds.links.LinkConfig
+import sbirds.net.NetGuard
 
 import scala.concurrent.duration.*
 
@@ -13,6 +15,9 @@ object Config {
   private def local(url: String): Boolean =
     scala.util.Try(java.net.URI.create(url).getHost).toOption.flatMap(Option(_)).map(_.toLowerCase)
       .exists(h => Set("localhost", "127.0.0.1", "[::1]").contains(h) || h.endsWith(".localhost"))
+
+  private def hostOf(url: String): Option[String] =
+    scala.util.Try(java.net.URI.create(url).getHost).toOption.flatMap(Option(_)).map(_.toLowerCase)
 
   def load: IO[AppConfig] = IO.fromEither(
     (for {
@@ -37,20 +42,22 @@ object Config {
         case (None, None, None) if devLogin => Right(None)
         case _ => Left("OIDC_ISSUER・OIDC_CLIENT_ID・OIDC_CLIENT_SECRET を設定してください（開発中は DEV_LOGIN=true で省略できます）")
       }
-      // Web 会議（skaka）: 3つ揃ったときだけ. 連携のトークンを暗号化するので APP_SECRET も要る
-      skaka <- (opt("SKAKA_URL"), opt("SKAKA_CLIENT_ID"), opt("SKAKA_CLIENT_SECRET")) match {
-        case (Some(u), Some(i), Some(s)) =>
-          val url = u.stripSuffix("/")
-          Right(Some(SkakaConfig(url, opt("SKAKA_INTERNAL_URL").map(_.stripSuffix("/")).getOrElse(url), i, s)))
-        case (None, None, None) => Right(None)
-        case _ => Left("SKAKA_URL・SKAKA_CLIENT_ID・SKAKA_CLIENT_SECRET は3つとも設定してください")
-      }
+      // 兄弟のサービス（skaka: Web 会議・stui: チャット）: URL・CLIENT_ID・CLIENT_SECRET が3つ揃ったときだけ.
+      // 連携のトークンを暗号化するので APP_SECRET も要る
+      skaka <- LinkConfig.fromEnv("SKAKA", "skaka", "read write", opt)
+      stui <- LinkConfig.fromEnv("STUI", "stui", "read write", opt)
       rate <- sbirds.http.RateLimitConfig.fromEnv()
       secret <- opt("APP_SECRET") match {
         case Some(s) if s.length < 16 => Left("APP_SECRET は16文字以上にしてください")
-        case None if skaka.isDefined => Left("skaka と連携するには APP_SECRET（16文字以上の秘密の値）を設定してください")
+        case None if skaka.isDefined || stui.isDefined =>
+          Left("skaka・stui と連携するには APP_SECRET（16文字以上の秘密の値）を設定してください")
         case s => Right(s)
       }
+      // カレンダーの通知先（Webhook・stui の受信 Webhook）に送ってよい内部のアドレス（CIDR・IP・ホスト名）.
+      // stui（STUI_URL・STUI_INTERNAL_URL）のホストは書かなくても許す
+      hookPolicy <- NetGuard.Policy.allowList(
+        list("WEBHOOK_ALLOW_INTERNAL") ++ stui.toList.flatMap(c => List(c.url, c.internalUrl)).flatMap(hostOf)
+      ).left.map(e => s"WEBHOOK_ALLOW_INTERNAL: $e")
       // OAUTH_CLIENTS: 認可を求める兄弟のサービス（scopes は省くと read だけ. 形は sbirds.oauth.OAuthClient.parse）
       clients <- sbirds.oauth.OAuthClient.fromEnv()
     } yield AppConfig(
@@ -68,7 +75,10 @@ object Config {
       ),
       staticDir = opt("STATIC_DIR"),
       skaka = skaka,
+      stui = stui,
       appSecret = secret,
+      hookPolicy = hookPolicy,
+      webhookAllowHttp = enabled("WEBHOOK_ALLOW_HTTP"),
       icsSyncMinutes = int("ICS_SYNC_MINUTES").filter(_ >= 5).getOrElse(60),
       icsAllowPrivate = enabled("ICS_ALLOW_PRIVATE_URLS")
     )).left.map(new IllegalArgumentException(_))

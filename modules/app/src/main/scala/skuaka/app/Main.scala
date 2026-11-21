@@ -15,6 +15,7 @@ import sbirds.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, T
 import sbirds.push.{PushService, PushStore}
 import sbirds.http.{Errors, Health, SecurityHeaders, Spa}
 import sbirds.net.NetGuard
+import sbirds.links.{IntegrationTokenStore, LinkClient, LinkConfig, StuiClient}
 import skuaka.core.ErrorCode
 
 import scala.concurrent.duration.*
@@ -24,10 +25,13 @@ final case class AppConfig(port: Int,
                            oidc: Option[OidcConfig],
                            api: ApiConfig,
                            staticDir: Option[String],
-                           skaka: Option[SkakaConfig],
+                           skaka: Option[LinkConfig],
                            appSecret: Option[String],
                            icsSyncMinutes: Int = 60,
-                           icsAllowPrivate: Boolean = false)
+                           icsAllowPrivate: Boolean = false,
+                           stui: Option[LinkConfig] = None,
+                           hookPolicy: NetGuard.Policy = NetGuard.Policy.publicOnly,
+                           webhookAllowHttp: Boolean = false)
 
 object Main extends IOApp.Simple {
 
@@ -56,10 +60,13 @@ object Main extends IOApp.Simple {
         calendars = new CalendarStore(xa, users)
         events = new EventStore(xa)
         sess = new SessionAuth(users, cfg.api)
-        skaka = (cfg.skaka, cfg.appSecret).mapN((c, k) =>
-          new SkakaService(c, http, new IntegrationStore(xa), skuaka.auth.SecretBox(k))
-        )
+        // 兄弟のサービスとの連携（ユーザーごとのトークンは APP_SECRET の鍵で暗号化して保存する）
+        tokens = new IntegrationTokenStore(xa)
+        link = (c: LinkConfig) => cfg.appSecret.map(k => new LinkClient(c, http, tokens, skuaka.auth.SecretBox(k)))
+        skaka = cfg.skaka.flatMap(link).map(new SkakaService(_))
+        stui = cfg.stui.flatMap(link).map(new StuiClient(_))
         _ <- Resource.eval(skaka.traverse_(s => sbirds.observe.Log.println(s"[skuaka] skaka（Web 会議）: ${s.cfg.url}")))
+        _ <- Resource.eval(stui.traverse_(s => sbirds.observe.Log.println(s"[skuaka] stui（チャット）: ${s.link.cfg.url}")))
         _ <- Resource.eval(cfg.api.oauthClients.traverse_(c =>
           sbirds.observe.Log.println(s"[skuaka] OAuth クライアント: ${c.id}（${c.scopes.mkString(" ")}）")
         ))
@@ -75,7 +82,19 @@ object Main extends IOApp.Simple {
         // プッシュ通知（PWA）: 招待と、予定のリマインダー（何分前のお知らせ）
         pushStore = new PushStore(xa)
         push <- Resource.eval(PushService.create(pushStore, http, cfg.api.publicUrl, "skuaka"))
-        notifier = new EventNotifier(events, users, push)
+        // カレンダーの通知先（stui のチャンネル・stui の受信 Webhook・Webhook）. 送り先は確かめた IP にそのままつなぐ
+        hookHttp <- NetGuard.client(cfg.hookPolicy, timeout = 20.seconds).map(HttpClientTelemetry(_))
+        hooks = new HookService(
+          new HookStore(xa),
+          stui,
+          hookHttp,
+          cfg.hookPolicy,
+          cfg.api.publicUrl,
+          cfg.webhookAllowHttp
+        )
+        _ <- hooks.loop.background
+        _ <- hooks.purgeLoop.background
+        notifier = new EventNotifier(events, users, push, stui, Some(hooks), cfg.api.publicUrl)
         // 外部のカレンダー（iCalendar の URL）の購読を定期的に読み直す.
         // 購読の URL は利用者が決めるので、確かめた IP にそのままつなぐクライアントで読む
         icsPolicy = NetGuard.Policy.of(cfg.icsAllowPrivate)
@@ -96,7 +115,9 @@ object Main extends IOApp.Simple {
           Some(pushStore -> push),
           Some(notifier),
           Some(new OAuthStore(xa)),
-          Some(importer)
+          Some(importer),
+          stui,
+          Some(hooks)
         ) <+>
           SecurityHeaders(ApiRoutes.headers(cfg.api))(
             Health.routes(Database.ping(xa)) <+> RumRoutes.routes <+> web.getOrElse(HttpRoutes.empty[IO])

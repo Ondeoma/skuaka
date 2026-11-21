@@ -19,7 +19,7 @@ val otelInstV = "2.33.1-alpha"
 lazy val sbirdsLib = sys.env
   .get("SBIRDS_LIB")
   .map(p => file(p).getCanonicalFile.toURI)
-  .getOrElse(uri("https://github.com/Ondeoma/sbirds-lib.git#v0.3.0"))
+  .getOrElse(uri("https://github.com/Ondeoma/sbirds-lib.git#v0.4.0"))
 lazy val libSharedJVM = ProjectRef(sbirdsLib, "sharedJVM")
 lazy val libSharedJS = ProjectRef(sbirdsLib, "sharedJS")
 lazy val libObserve = ProjectRef(sbirdsLib, "observe")
@@ -32,6 +32,7 @@ lazy val libDevidp = ProjectRef(sbirdsLib, "devidp")
 lazy val libDb = ProjectRef(sbirdsLib, "db")
 lazy val libNet = ProjectRef(sbirdsLib, "net")
 lazy val libOauth = ProjectRef(sbirdsLib, "oauth")
+lazy val libLinks = ProjectRef(sbirdsLib, "links")
 
 // http4s のサーバー側（ルートの DSL と JSON）
 val http4sServer = Seq(
@@ -79,13 +80,14 @@ lazy val core = (project in file("modules/core"))
   .settings(commonTest)
 
 lazy val db = (project in file("modules/db"))
-  .dependsOn(core, libObserve, libDb, libOauth)
+  .dependsOn(core, libObserve, libDb, libOauth, libLinks)
   .settings(commonTest)
   .settings(
     libraryDependencies ++= Seq(
       "org.tpolecat" %% "doobie-core" % doobieV,
       "org.tpolecat" %% "doobie-hikari" % doobieV,
       "org.tpolecat" %% "doobie-postgres" % doobieV,
+      "org.tpolecat" %% "doobie-postgres-circe" % doobieV,
       "org.typelevel" %% "cats-effect" % ceV,
       "org.postgresql" % "postgresql" % "42.7.14",
       "org.flywaydb" % "flyway-core" % flywayV,
@@ -106,7 +108,7 @@ lazy val devidp = (project in file("modules/devidp"))
   )
 
 lazy val api = (project in file("modules/api"))
-  .dependsOn(core, db, auth, shared.jvm, libObserve, libHttp, libMcp, libPush, libNet, devidp % "test->compile", libOauth)
+  .dependsOn(core, db, auth, shared.jvm, libObserve, libHttp, libMcp, libPush, libNet, devidp % "test->compile", libOauth, libLinks)
   .settings(commonTest)
   .settings(
     libraryDependencies ++= http4sServer

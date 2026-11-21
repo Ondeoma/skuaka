@@ -19,8 +19,19 @@ final case class User(id: UUID,
                       avatarUrl: Option[String],
                       timezone: String,
                       disabled: Boolean,
-                      avatarUploaded: Boolean) {
-  def me: MeDto = MeDto(id, name, email, avatarUrl, timezone, avatarUploaded)
+                      avatarUploaded: Boolean,
+                      chatReminders: Boolean = true,
+                      chatInvites: Boolean = true) {
+  def me: MeDto = MeDto(
+    id,
+    name,
+    email,
+    avatarUrl,
+    timezone,
+    avatarUploaded,
+    chatReminders = chatReminders,
+    chatInvites = chatInvites
+  )
   def brief: UserBrief = me.brief
 }
 
@@ -37,7 +48,7 @@ object UserCols {
 final class UserStore(xa: Transactor[IO]) extends TxStore(xa) {
 
   private val cols = fr"app_user.id, sub, name, email," ++ UserCols.avatar("app_user") ++
-    fr", timezone, disabled, avatar_version is not null"
+    fr", timezone, disabled, avatar_version is not null, chat_reminders, chat_invites"
 
   /** ログインのたびに作成・更新する（名前・メール・アイコンは IdP の値に合わせる）. */
   def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] = tx(
@@ -78,9 +89,17 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa) {
     }
   }
 
-  def updateMe(id: UUID, name: Option[String], timezone: Option[String]): IO[Unit] = tx {
-    val sets =
-      List(name.map(_.trim).filter(_.nonEmpty).map(v => fr"name = $v"), timezone.map(v => fr"timezone = $v")).flatten
+  def updateMe(id: UUID,
+               name: Option[String],
+               timezone: Option[String],
+               chatReminders: Option[Boolean] = None,
+               chatInvites: Option[Boolean] = None): IO[Unit] = tx {
+    val sets = List(
+      name.map(_.trim).filter(_.nonEmpty).map(v => fr"name = $v"),
+      timezone.map(v => fr"timezone = $v"),
+      chatReminders.map(v => fr"chat_reminders = $v"),
+      chatInvites.map(v => fr"chat_invites = $v")
+    ).flatten
     if sets.isEmpty then ().pure[ConnectionIO]
     else (fr"update app_user" ++ Sql.set(sets) ++ fr"where id = $id").update.run.void
   }

@@ -97,3 +97,29 @@
   場所に既に skaka の URL があれば作らない。
 - 「すべて」の変更で題名・日時が変わったら、場所の URL のコードで `PUT /api/rooms/{code}/event` を呼ぶ（失敗しても保存は止めない）。
 - skaka が 401 を返したらトークンの失効なので、保存したトークンを消して「連携が切れた」と扱う。
+- 連携の開始・戻り・やめる・状態（`/api/integrations/{skaka|stui}/…`）は `LinkRoutes`、トークンの保存・交換・失効は sbirds-lib の `sbirds.links.LinkClient`（stui と同じ）。
+
+## チャット（stui）との連携と、カレンダーの通知先
+
+stui との連携は skaka と同じ形（`STUI_URL`・`STUI_CLIENT_ID`・`STUI_CLIENT_SECRET`、スコープ `read write`）。stui への投稿は sbirds-lib の `sbirds.links.StuiClient`
+（stui の `POST /api/apps/notify`. 文書は stui の docs/integrations.md）。
+
+- **DM**: 連携した人には、プッシュ通知と同じ時に、stui のボット「skuaka」から DM を送る（`EventNotifier`）。
+  リマインダー（`reminderTargets` の人. 欠席の人を除く）と招待（新しく加えたゲスト）。個人の設定（`app_user.chat_reminders`・`chat_invites`. 既定は受け取る）で止められる。
+  裏で送り、届かなくてもほかの通知は止めない（送り直さない）。stui が 401 を返したら連携を外す。
+- **カレンダーの通知先**（`calendar_hook`. カレンダーの設定の「通知先」. 所有者と変更の権限がある人が設定する）:
+  - `stui`: 設定した人（`owner_id`）の連携で、その人が参加しているチャンネルに投稿する（保存のときに stui の `GET /api/channels` で参加を確かめる）。
+    チャンネルを変えずにほかの人が名前などを変えても、投稿する人は変わらない。その人が連携をやめる・チャンネルを抜けると、送れずに諦める（理由を残す）
+  - `stui_hook`: stui の受信 Webhook の URL（`…/hooks/{トークン}`）に `{"text", "username": "skuaka"}` を送る。URL は秘密の値なので API では返さない。
+    `STUI_URL` で始まる URL は `STUI_INTERNAL_URL` に替えて送る
+  - `url`: 任意の URL に JSON を POST する（sbirds-lib の `sbirds.links.Webhook`）。ヘッダーは `X-Skuaka-Event`（できごと）・`X-Skuaka-Delivery`（送信の ID. 送り直しても同じ）・
+    `X-Skuaka-Signature`（`sha256=` + 本文を `secret` で HMAC-SHA256 した16進）。https だけ（`WEBHOOK_ALLOW_HTTP` で http も）
+  - 送り先は送るたびに確かめ、内部のアドレス（localhost・プライベートな IP・メタデータ）には `WEBHOOK_ALLOW_INTERNAL` に書いたもの（と stui のホスト）にしか送らない
+- **できごと**（`events` で選ぶ）: `event.reminder`（予定に付けた通知の時刻. 通知の付いた時刻のある予定だけ）・`event.created`・`event.updated`・`event.deleted`
+  （画面・REST API・MCP からの変更. 別のカレンダーへ移したら、元のカレンダーには削除として送る. iCalendar の取り込み・購読の読み直しでは送らない）。「テストを送る」は `ping`。
+- **本文**（`HookPayload`）: `{type, calendar: {id, name}, actor?: {id, name}, event: {id, title, description, location, allDay, start, end, timezone, recurring,
+  when（予定のタイムゾーンでの「12月4日（金） 10:00〜11:00」）, url}, minutes?（リマインダーの何分前）, scope?（繰り返しの予定の変更・削除の範囲 this|following|all）}`。
+  stui にはこれを文にして送る。`url` は予定を開くリンク（`/?event={ID}&date={その回の日}`. 画面はその日を開いて詳細を出す. 削除したら `/?date=…`）
+- **送信待ち**（`calendar_hook_delivery`）: 予定の保存の後に積み、10秒ごとに送る（複数ノードでも `SKIP LOCKED` で重ならない）。
+  失敗したら30秒から倍々（最大1時間）で送り直し、8回で諦める。送っても無駄なもの（410・連携が切れた・チャンネルに投稿できない・内部のアドレス）は送り直さない。
+  送り終えた記録は30日で消す。通知先ごとに最後の送信と最近の20件を画面で見られる。リマインダーは `reminder_sent` に先に印を付けたノードだけが積む

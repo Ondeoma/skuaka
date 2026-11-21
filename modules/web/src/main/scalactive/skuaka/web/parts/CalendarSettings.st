@@ -5,7 +5,7 @@ import skuaka.shared.*
 import java.util.UUID
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 
-// カレンダーの設定と共有（所有者: 名前・色・説明・共有の相手・iCalendar の配信・削除. ほかの人: 自分の表示の色・外す）
+// カレンダーの設定と共有（所有者: 名前・色・説明・共有の相手・iCalendar の配信・削除. ほかの人: 自分の表示の色・外す. 所有者と変更の権限がある人: 通知先）
 case class Props(calId: UUID)
 
 case class State(name: RV[String], color: RV[String], desc: RV[String], access: RV[String], members: RV[List[MemberDto]] = RV(Nil),
@@ -31,6 +31,7 @@ def hasLink(props: Props) = link(props).mapC(_.isDefined)
 def pageUrl(props: Props) = link(props).mapC(_.map(_.pageUrl).getOrElse(""))
 def icsUrl(props: Props) = link(props).mapC(_.map(_.icsUrl).getOrElse(""))
 def linkAccess(props: Props) = link(props).mapC(_.map(_.access).getOrElse(CalRole.Busy))
+def canHook(props: Props) = current(props).mapC(_.exists(c => CalRole.rank(c.role) >= CalRole.rank(CalRole.Edit)))
 def canDelete(props: Props) = current(props).mapC(_.exists(c => c.role == CalRole.Owner && !c.primary))
 def ownerText(props: Props) = current(props).mapC(_.map { c =>
   if (c.viaTeam) s"${c.owner.name} さんがチームに公開しているカレンダー（${TeamAccess.label(c.teamAccess)}）"
@@ -183,6 +184,7 @@ val linkAccesses: List[(String, String)] = List(CalRole.Busy, CalRole.View).map(
         <Avatar :user="Some(m.user.person)" :size="28" /><span class="grow">{{ m.user.name }}</span><span class="muted small">{{ CalRole.label(m.role) }}</span>
       </div>
     </template>
+    <CalendarHooks v-if="canHook(props)" :calId="props.calId" />
     <div class="actions">
       <button v-if="canDelete(props)" class="danger" @click="remove(props)">カレンダーを削除</button>
       <button v-if="notOwner(props)" class="danger" @click="remove(props)">{{ leaveLabel(props) }}</button>

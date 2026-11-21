@@ -59,8 +59,9 @@ object Store {
 
   val me: RV[Option[MeDto]] = RV(None)
 
-  /** Web 会議（skaka）と連携しているか（設定されていなければ None）. */
-  val skaka: RV[Option[SkakaStatusDto]] = RV(None)
+  /** Web 会議（skaka）・チャット（stui）と連携しているか（設定されていなければ None）. */
+  val skaka: RV[Option[LinkStatusDto]] = RV(None)
+  val stui: RV[Option[LinkStatusDto]] = RV(None)
 
   /** 公開リンクで見ているとき（ログインしない人. 閲覧だけ）: 秘密の値とカレンダー. */
   val guest: RV[Option[(String, PublicCalendarDto)]] = RV(None)
@@ -180,7 +181,11 @@ object Store {
 
   def loadCalendars(): Future[Unit] = Api.calendars().map(cs => calendars := cs)
 
-  def loadSkaka(): Future[Unit] = Api.skakaStatus().map(st => skaka := Option.when(st.enabled)(st))
+  def loadSkaka(): Future[Unit] = loadLink("skaka")
+
+  /** 連携の状態を読み直す（p は skaka か stui）. */
+  def loadLink(p: String): Future[Unit] =
+    Api.linkStatus(p).map(st => (if (p == "stui") stui else skaka) := Option.when(st.enabled)(st))
 
   /** 場所にある Web 会議（skaka）の会議室の URL. */
   def meetingUrl(location: String): Option[String] =
@@ -439,6 +444,26 @@ object Store {
     reminders.start()
     Keys.install()
     loadSkaka().failed.foreach(_ => ())
+    loadLink("stui").failed.foreach(_ => ())
+    openLinked()
+  }
+
+  /**
+   * stui の通知などのリンク（/?event={予定ID}&date={日付}）から開いたとき: その日を開き、予定の詳細を出す.
+   * 見られない予定なら、その日を開くだけ. URL からは消す.
+   */
+  def openLinked(): Unit = {
+    val ev = Router.queryParam("event").v.flatMap(x => scala.util.Try(UUID.fromString(x)).toOption)
+    val day = Router.queryParam("date").v.filter(_.matches("\\d{4}-\\d{2}-\\d{2}"))
+    if (ev.isDefined || day.isDefined) {
+      Router.setQuery("event" -> None, "date" -> None)
+      day.foreach(d => date := d)
+      ev.foreach(id =>
+        Api.events(day.getOrElse(date.v), Cal.addDays(day.getOrElse(date.v), 1)).foreach(os =>
+          detail := os.find(_.eventId == id).orElse(detail.v)
+        )
+      )
+    }
   }
 
   // ---------------------------------------------------------------- 通知（予定の前に知らせる）

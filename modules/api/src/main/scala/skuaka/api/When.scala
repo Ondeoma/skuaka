@@ -20,4 +20,23 @@ object When {
       val at = s.atZone(zone)
       (if today.contains(at.toLocalDate) then "" else dateFmt.format(at) + " ") + timeFmt.format(at)
   }
+
+  /** 「11月17日（火） 10:00〜11:00」. 日をまたぐときは終わりにも日付を付ける. 終日の予定は日付だけ. */
+  def range(span: Span, zone: ZoneId): String = span match {
+    case Span.AllDay(_, _) => text(span, zone)
+    case Span.Timed(s, e) =>
+      val (a, b) = (s.atZone(zone), e.atZone(zone))
+      text(span, zone) + "〜" + (if a.toLocalDate == b.toLocalDate then "" else dateFmt.format(b) + " ") +
+        timeFmt.format(b)
+  }
+
+  /** 予定の始まる日（表示のタイムゾーンで）. */
+  def date(span: Span, zone: ZoneId): LocalDate = span match {
+    case Span.AllDay(s, _) => s
+    case Span.Timed(s, _) => s.atZone(zone).toLocalDate
+  }
+
+  /** 「（10分後）」. 予定の時刻ちょうどなら空. */
+  def until(minutes: Int): String =
+    if minutes == 0 then "" else s"（${skuaka.shared.Reminders.label(minutes).stripSuffix("前")}後）"
 }

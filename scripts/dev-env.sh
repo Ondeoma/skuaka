@@ -14,6 +14,11 @@ fi
 export APP_SECRET=${APP_SECRET:-skuaka-dev-app-secret-0123456789}
 # Web 会議（skaka）との連携: skaka の開発環境（画面 :5177. /oauth・/api を skaka のサーバーへ中継）に登録済みの値
 export SKAKA_URL=${SKAKA_URL:-http://localhost:5177} SKAKA_CLIENT_ID=${SKAKA_CLIENT_ID:-skuaka} SKAKA_CLIENT_SECRET=${SKAKA_CLIENT_SECRET:-skuaka-dev-secret-0123456789}
+# チャット（stui）との連携: stui の開発環境（画面 :5178）の OAUTH_CLIENTS に、id=skuaka・この secret・
+# redirectUri=http://localhost:5175/api/integrations/stui/callback・scopes=["read","write"] で登録する
+export STUI_URL=${STUI_URL:-http://localhost:5178} STUI_CLIENT_ID=${STUI_CLIENT_ID:-skuaka} STUI_CLIENT_SECRET=${STUI_CLIENT_SECRET:-skuaka-dev-secret-0123456789}
+# カレンダーの通知先（Webhook）: 開発中は http と手元（localhost）の URL にも送れるようにする
+export WEBHOOK_ALLOW_HTTP=true WEBHOOK_ALLOW_INTERNAL=localhost,127.0.0.1,::1
 # skuaka が認可を出す側（skakapo が利用者の権限で REST API・MCP を使う）。skakapo の開発環境（:5199）に登録する値
 export OAUTH_CLIENTS='[{"id":"skakapo","secret":"skakapo-dev-secret-0123456789","redirectUri":"http://localhost:5199/api/connections/callback","name":"skakapo","scopes":["read","write"]}]'
 # 外部のカレンダーの購読: 開発中は手元（localhost）の iCalendar の URL も購読できるようにする（本番では外部に公開されたアドレスだけ）

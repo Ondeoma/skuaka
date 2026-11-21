@@ -200,16 +200,16 @@ final class EventStore(xa: Transactor[IO]) extends TxStore(xa) {
     ].to[List])
 
   /**
-   * リマインダーを受け取る人（ユーザーの ID とタイムゾーン）: カレンダーの所有者・共有された人（チームへの公開で加えた人は除く）と、
+   * リマインダーを受け取る人（ユーザーの ID・タイムゾーン・stui の DM でも受け取るか）: カレンダーの所有者・共有された人（チームへの公開で加えた人は除く）と、
    * ゲスト. 欠席と返事した人・無効なユーザーは除く.
    */
-  def reminderTargets(id: UUID, calendarId: UUID): IO[List[(UUID, String)]] = tx(
-    sql"""select u.id, u.timezone from app_user u
+  def reminderTargets(id: UUID, calendarId: UUID): IO[List[(UUID, String, Boolean)]] = tx(
+    sql"""select u.id, u.timezone, u.chat_reminders from app_user u
           where not u.disabled and u.id in (
             select m.user_id from calendar_member m where m.calendar_id = $calendarId and m.role in ('owner', 'edit', 'view')
             union select a.user_id from event_attendee a where a.event_id = $id)
           and not exists (select 1 from event_attendee d where d.event_id = $id and d.user_id = u.id and d.response = 'declined')"""
-      .query[(UUID, String)].to[List]
+      .query[(UUID, String, Boolean)].to[List]
   )
 
   /** リマインダーを送った印を付ける. 初めてなら true（ほかのノードが先に付けていれば false. 送らない）. */

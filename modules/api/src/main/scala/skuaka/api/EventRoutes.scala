@@ -33,7 +33,8 @@ final class EventRoutes(events: EventStore,
                         users: UserStore,
                         val sessions: SessionAuth,
                         skaka: Option[SkakaService] = None,
-                        notifier: Option[EventNotifier] = None)
+                        notifier: Option[EventNotifier] = None,
+                        hooks: Option[HookService] = None)
   extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -128,6 +129,7 @@ final class EventRoutes(events: EventStore,
                   "meeting" -> r.withMeeting.contains(true).toString
                 ) *>
                 invite(u, id, guests) *>
+                announce(u, HookEvent.Created, id) *>
                 attachMeeting(u, id, r.withMeeting).flatMap(me =>
                   respondEvent(u, id, me).map(_.withStatus(Status.Created))
                 )
@@ -154,7 +156,10 @@ final class EventRoutes(events: EventStore,
                 // 前からのゲストには知らせない（新しく加えた人だけ）
                 val added = guests.filterNot(before.map(_.user.id).toSet)
                 def done(target: UUID) = Metrics.count("skuaka.events.updated", "scope" -> scopeOf(req, m)) *>
-                  invite(u, target, added)
+                  invite(u, target, added) *>
+                  // 別のカレンダーへ移したら、元のカレンダーの通知先には「削除」として知らせる
+                  IO.whenA(in.calendarId != m.calendarId)(announceRow(u, HookEvent.Deleted, m, scopeParam(req, m))) *>
+                  announce(u, HookEvent.Updated, target, scopeParam(req, m))
                 cut(req, m) match {
                   case Some(rest) =>
                     // 切った回から新しい予定にする（「この予定」は1回だけ）
@@ -190,7 +195,8 @@ final class EventRoutes(events: EventStore,
       editable(u, id)(v =>
         Telemetry.span("event.delete", "event.id" -> id.toString, "scope" -> scopeOf(req, v.row))(
           cut(req, v.row).fold(events.delete(id))(events.update(_, None, None).void) *>
-            Metrics.count("skuaka.events.deleted", "scope" -> scopeOf(req, v.row)) *> NoContent()
+            Metrics.count("skuaka.events.deleted", "scope" -> scopeOf(req, v.row)) *>
+            announceRow(u, HookEvent.Deleted, v.row, scopeParam(req, v.row)) *> NoContent()
         )
       )
     }
@@ -349,6 +355,17 @@ final class EventRoutes(events: EventStore,
   private def invite(u: User, id: UUID, guests: List[UUID]): IO[Unit] =
     IO.whenA(guests.nonEmpty)(Metrics.add("skuaka.invitations.sent", guests.size.toLong) *>
       notifier.traverse_(_.invited(u, id, guests).start.void))
+
+  /** カレンダーの通知先に積む（裏で. 保存の応答は待たせない）. */
+  private def announce(u: User, kind: String, id: UUID, scope: Option[String] = None): IO[Unit] =
+    hooks.traverse_(h => events.get(id).flatMap(_.traverse_(h.changed(u, kind, _, scope))).start.void)
+
+  private def announceRow(u: User, kind: String, r: EventRow, scope: Option[String]): IO[Unit] =
+    hooks.traverse_(_.changed(u, kind, r, scope).start.void)
+
+  /** 繰り返しの予定の変更・削除の範囲（通知の本文. 繰り返しでなければ None）. */
+  private def scopeParam(req: Request[IO], m: EventRow): Option[String] =
+    m.recurrence.map(_ => param(req, "scope").getOrElse(EditScope.All))
 
   /** 変更・削除の範囲（メトリクスの属性）. */
   private def scopeOf(req: Request[IO], m: EventRow): String =

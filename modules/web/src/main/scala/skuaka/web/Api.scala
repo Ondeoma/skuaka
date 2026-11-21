@@ -63,13 +63,26 @@ object Api extends sbirds.web.ApiBase {
     post[CalendarDto](s"/api/calendars/$id/public", r.asJson)
   def stopPublicLink(id: UUID): Future[Unit] = delete(s"/api/calendars/$id/public")
 
-  // ---------------------------------------------------------------- Web 会議（skaka）との連携
+  // ---------------------------------------------------------------- 兄弟のサービス（skaka: Web 会議・stui: チャット）との連携
 
-  def skakaStatus(): Future[SkakaStatusDto] = get[SkakaStatusDto]("/api/integrations/skaka")
+  def linkStatus(p: String): Future[LinkStatusDto] = get[LinkStatusDto](s"/api/integrations/$p")
 
-  /** 連携を始める（skaka の許可の画面へ移り、終わると戻り先へ戻る）. */
-  def skakaConnectUrl(returnTo: String): String = "/api/integrations/skaka/connect?returnTo=" + enc(returnTo)
-  def disconnectSkaka(): Future[Unit] = delete("/api/integrations/skaka/connection")
+  /** 連携を始める（相手の許可の画面へ移り、終わると戻り先へ戻る）. */
+  def linkConnectUrl(p: String, returnTo: String): String = s"/api/integrations/$p/connect?returnTo=" + enc(returnTo)
+  def disconnectLink(p: String): Future[Unit] = delete(s"/api/integrations/$p/connection")
+
+  /** 投稿先に選べる stui のチャンネル（自分が参加しているもの）. */
+  def stuiChannels(): Future[List[StuiChannelDto]] = get[List[StuiChannelDto]]("/api/integrations/stui/channels")
+
+  // ---------------------------------------------------------------- カレンダーの通知先
+
+  def hooks(calId: UUID): Future[List[HookDto]] = get[List[HookDto]](s"/api/calendars/$calId/hooks")
+  def createHook(calId: UUID, r: HookReq): Future[List[HookDto]] =
+    post[List[HookDto]](s"/api/calendars/$calId/hooks", r.asJson)
+  def updateHook(id: UUID, r: HookReq): Future[List[HookDto]] = put[List[HookDto]](s"/api/hooks/$id", r.asJson)
+  def deleteHook(id: UUID): Future[Unit] = delete(s"/api/hooks/$id")
+  def testHook(id: UUID): Future[Unit] = postUnit(s"/api/hooks/$id/test")
+  def hookDeliveries(id: UUID): Future[List[HookDeliveryDto]] = get[List[HookDeliveryDto]](s"/api/hooks/$id/deliveries")
 
   // ---------------------------------------------------------------- 公開リンク（ログインしない人）
 

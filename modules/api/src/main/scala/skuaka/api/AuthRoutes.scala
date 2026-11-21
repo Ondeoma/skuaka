@@ -141,7 +141,7 @@ final class AuthRoutes(oidc: Option[OidcClient],
         val tz = r.timezone.map(_.trim).filter(_.nonEmpty)
         if tz.exists(z => skuaka.core.Time.zone(z).isEmpty) then err(ErrorCode.TimeZoneInvalid)
         else if r.name.exists(_.trim.length > 100) then err(ErrorCode.NameTooLong)
-        else users.updateMe(u.id, r.name, tz) *> me(u)
+        else users.updateMe(u.id, r.name, tz, r.chatReminders, r.chatInvites) *> me(u)
       }
     )
 
