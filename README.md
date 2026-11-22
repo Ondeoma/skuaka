@@ -37,7 +37,7 @@ skuaka は、チームで予定を管理・共有するためのカレンダー�
 - **MCP**: `POST /mcp`（Streamable HTTP）。MCP に対応した AI アシスタントから予定の一覧・検索・作成・変更・削除、招待への返事、空き時間の検索ができる
 - **同時の編集**: 楽観ロック（ほかの人が先に変えたら 409）。ほかの人の変更は1分ごと・画面に戻ったときに読み直す
 
-技術: Scala 3.3 LTS、Cats Effect 3、http4s 1.0（マイルストーン版）、doobie、Flyway、PostgreSQL 17、
+技術: Scala 3.9 LTS、Cats Effect 3、http4s 1.0（マイルストーン版）、doobie、Flyway、PostgreSQL 17、
 Scala.js + [Scalactive](https://github.com/Ondeoma/scalactive)、Vite。設計は [docs/design.md](docs/design.md) を参照してください。
 
 ## 構成
