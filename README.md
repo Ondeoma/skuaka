@@ -58,7 +58,7 @@ Scala.js + [Scalactive](https://github.com/Ondeoma/scalactive)、Vite。設計�
 
 ## 開発
 
-必要なもの: JDK 21、sbt、Node.js、Docker。
+必要なもの: JDK 25、sbt、Node.js、Docker。
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --wait   # PostgreSQL（:54349。テスト用の DB skuaka_test も作る）

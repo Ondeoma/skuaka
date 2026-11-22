@@ -29,7 +29,7 @@ def guestSummary(s: State) = guests(s).mapC { as =>
   val yes = as.count(_.response == Rsvp.Accepted)
   val no  = as.count(_.response == Rsvp.Declined)
   val wait = as.count(a => a.response == Rsvp.NeedsAction || a.response == Rsvp.Tentative)
-  s"ゲスト ${as.size} 人（参加 $yes・不参加 $no・未定 $wait）"
+  s"ゲスト ${as.size} 人（参加 ${yes}・不参加 ${no}・未定 $wait）"
 }
 def mark(r: String): String = r match {
   case Rsvp.Accepted  => "✓"
